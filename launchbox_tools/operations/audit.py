@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..config import LAUNCHBOX_ROOT
 from ..models import GameEntry, PlatformAuditResult, PlatformInfo
 from ..paths import path_key
 from ..xml_repository import load_games, load_platforms
@@ -65,7 +64,7 @@ def audit_platform(platform: PlatformInfo, root: Path) -> PlatformAuditResult:
     return result
 
 
-def run_audit(root: Path = LAUNCHBOX_ROOT) -> list[PlatformAuditResult]:
+def run_audit(root: Path) -> list[PlatformAuditResult]:
     root = root.resolve(strict=False)
     platforms = load_platforms(root)
     return [audit_platform(platform, root) for platform in platforms]

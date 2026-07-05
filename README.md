@@ -2,13 +2,17 @@
 
 Python-скрипт для проверки ROM-файлов LaunchBox и обслуживания записей `AdditionalApplication`.
 
-Скрипт по умолчанию использует LaunchBox по пути:
+Настройки путей задаются через файл `launchbox_utils.ini` или параметры командной строки.
 
-```python
-LAUNCHBOX_ROOT = Path(r"D:\Games\LaunchBox")
+Пример файла конфигурации:
+
+```ini
+[paths]
+launchbox_root = D:\Games\LaunchBox
+output_dir = AuditReports
 ```
 
-Если LaunchBox находится в другом месте, измените эту строку в `launchbox_tools\config.py` или передайте путь через `--root`.
+В репозитории есть пример `launchbox_utils.example.ini`. Скопируйте его в `launchbox_utils.ini` и укажите свои пути. Реальный `launchbox_utils.ini` добавлен в `.gitignore`, чтобы локальные пути не попадали в GitHub.
 
 ## Требования
 
@@ -37,6 +41,18 @@ python launchbox_utils.py audit
 python launchbox_utils.py --root "D:\LaunchBox" audit
 ```
 
+С другой папкой отчетов:
+
+```powershell
+python launchbox_utils.py --output "D:\LaunchBox Reports" audit
+```
+
+С другим файлом конфигурации:
+
+```powershell
+python launchbox_utils.py --config "D:\Configs\launchbox_utils.ini" audit
+```
+
 Создать детальные папки и файлы только для платформ с расхождениями или предупреждениями:
 
 ```powershell
@@ -44,6 +60,32 @@ python launchbox_utils.py audit --only-with-findings
 ```
 
 Аудит только читает базу LaunchBox и файловую систему. Он не меняет XML и ROM-файлы.
+
+## Конфигурация
+
+Файл конфигурации по умолчанию:
+
+```text
+launchbox_utils.ini
+```
+
+Формат:
+
+```ini
+[paths]
+launchbox_root = D:\Games\LaunchBox
+output_dir = AuditReports
+```
+
+Правила приоритета:
+
+- `--root` имеет приоритет над `launchbox_root` из конфига.
+- Если `--root` не указан, используется `launchbox_root` из `launchbox_utils.ini`.
+- `--output` имеет приоритет над `output_dir` из конфига.
+- Если `--output` не указан, используется `output_dir` из `launchbox_utils.ini`.
+- Относительный `output_dir` считается относительно `launchbox_root`.
+- Абсолютный `output_dir` используется как есть.
+- Если путь к LaunchBox или output-папка не заданы ни в параметрах, ни в конфиге, скрипт завершится с ошибкой конфигурации.
 
 ### Отчеты аудита
 

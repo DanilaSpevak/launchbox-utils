@@ -3,20 +3,19 @@ from __future__ import annotations
 import argparse
 import sys
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
-from .config import LAUNCHBOX_ROOT, REPORT_DIR_NAME
+from .config import ConfigError, DEFAULT_CONFIG_PATH, load_app_config, resolve_config_path
 from .operations.audit import run_audit
 from .operations.dedupe_additional_apps import run_additional_apps_dedupe
-from .paths import resolve_output_dir
 from .reports.audit_reports import write_reports
 from .reports.dedupe_reports import write_dedupe_reports
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Audit and maintain a LaunchBox ROM database.")
-    parser.add_argument("--root", default=str(LAUNCHBOX_ROOT), help="LaunchBox root directory.")
-    parser.add_argument("--output", default=REPORT_DIR_NAME, help="Report directory. Relative paths are resolved from LaunchBox root.")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to launchbox_utils.ini.")
+    parser.add_argument("--root", help="LaunchBox root directory. Overrides the config file.")
+    parser.add_argument("--output", help="Report directory. Overrides the config file. Relative paths are resolved from LaunchBox root.")
 
     subparsers = parser.add_subparsers(dest="command")
     audit_parser = subparsers.add_parser("audit", help="Run the read-only ROM audit.")
@@ -40,12 +39,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    root = Path(args.root).resolve(strict=False)
-    output_dir = resolve_output_dir(root, args.output)
     command = args.command or "audit"
     only_with_findings = getattr(args, "only_with_findings", False)
 
     try:
+        app_config = load_app_config(
+            resolve_config_path(args.config),
+            root_override=args.root,
+            output_override=args.output,
+        )
+        root = app_config.launchbox_root
+        output_dir = app_config.output_dir
+
         if command == "audit":
             results = run_audit(root)
             write_reports(results, output_dir, only_with_findings)
@@ -62,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except OSError as exc:
         print(f"LaunchBox operation failed: {exc}", file=sys.stderr)
+        return 1
+    except ConfigError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
     if command == "audit":

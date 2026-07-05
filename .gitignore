@@ -7,3 +7,5 @@ venv/
 
 backups/
 tmp_verify*/
+
+launchbox_utils.ini

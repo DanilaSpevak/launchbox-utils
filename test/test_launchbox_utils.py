@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from launchbox_tools.config import ConfigError, load_app_config
 from launchbox_tools.operations.audit import audit_platform
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
 from launchbox_tools.paths import safe_report_dir_name
@@ -72,6 +73,51 @@ class LaunchBoxAuditTests(unittest.TestCase):
                 platforms[0].database_xml,
                 root / "Data" / "Platforms" / "Nintendo Entertainment System.xml",
             )
+
+    def test_load_app_config_reads_paths_from_ini(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            config_path = temp_path / "launchbox_utils.ini"
+            config_path.write_text(
+                f"""[paths]
+launchbox_root = {temp_path / "LaunchBox"}
+output_dir = Reports
+""",
+                encoding="utf-8",
+            )
+
+            config = load_app_config(config_path)
+
+            self.assertEqual(config.launchbox_root, (temp_path / "LaunchBox").resolve(strict=False))
+            self.assertEqual(config.output_dir, (temp_path / "LaunchBox" / "Reports").resolve(strict=False))
+
+    def test_load_app_config_cli_overrides_ini(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            config_path = temp_path / "launchbox_utils.ini"
+            config_path.write_text(
+                f"""[paths]
+launchbox_root = {temp_path / "ConfiguredLaunchBox"}
+output_dir = ConfiguredReports
+""",
+                encoding="utf-8",
+            )
+
+            config = load_app_config(
+                config_path,
+                root_override=str(temp_path / "CliLaunchBox"),
+                output_override=str(temp_path / "CliReports"),
+            )
+
+            self.assertEqual(config.launchbox_root, (temp_path / "CliLaunchBox").resolve(strict=False))
+            self.assertEqual(config.output_dir, (temp_path / "CliReports").resolve(strict=False))
+
+    def test_load_app_config_requires_root_and_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "missing.ini"
+
+            with self.assertRaises(ConfigError):
+                load_app_config(config_path)
 
     def test_audit_platform_finds_missing_and_unregistered_files(self) -> None:
         with self.make_root() as temp_dir:
