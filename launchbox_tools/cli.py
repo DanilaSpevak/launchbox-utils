@@ -18,6 +18,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", help="Report directory. Overrides the config file. Relative paths are resolved from LaunchBox root.")
 
     subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("gui", help="Open the graphical interface.")
+
     audit_parser = subparsers.add_parser("audit", help="Run the read-only ROM audit.")
     audit_parser.add_argument(
         "--only-with-findings",
@@ -41,10 +43,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     command = args.command or "audit"
     only_with_findings = getattr(args, "only_with_findings", False)
+    config_path = resolve_config_path(args.config)
+
+    if command == "gui":
+        from .gui.app import run_gui
+
+        return run_gui(config_path)
 
     try:
         app_config = load_app_config(
-            resolve_config_path(args.config),
+            config_path,
             root_override=args.root,
             output_override=args.output,
         )

@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from launchbox_tools.config import ConfigError, load_app_config
+from launchbox_tools.cli import build_arg_parser
+from launchbox_tools.config import ConfigError, load_app_config, load_raw_path_config, normalize_path_text, save_raw_path_config
+from launchbox_tools.gui.translations import translate
 from launchbox_tools.operations.audit import audit_platform
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
 from launchbox_tools.paths import safe_report_dir_name
@@ -118,6 +120,40 @@ output_dir = ConfiguredReports
 
             with self.assertRaises(ConfigError):
                 load_app_config(config_path)
+
+    def test_raw_path_config_round_trip_for_gui(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+
+            save_raw_path_config(config_path, r"D:\Games\LaunchBox", "AuditReports")
+            raw_config = load_raw_path_config(config_path)
+
+            self.assertEqual(raw_config.launchbox_root, r"D:\Games\LaunchBox")
+            self.assertEqual(raw_config.output_dir, "AuditReports")
+
+    def test_normalize_path_text_collapses_duplicate_separators(self) -> None:
+        self.assertEqual(normalize_path_text(r"literal:D:\\Games\\LaunchBox"), r"D:\Games\LaunchBox")
+        self.assertEqual(normalize_path_text(r"\\server\\share\\LaunchBox"), r"\\server\share\LaunchBox")
+
+    def test_gui_translations_support_russian_and_english(self) -> None:
+        self.assertEqual(translate("en", "audit_group"), "Audit")
+        self.assertEqual(translate("ru", "audit_group"), "Аудит")
+        self.assertEqual(translate("ru", "interface_language_tooltip"), "Язык интерфейса")
+        self.assertEqual(translate("en", "browse_launchbox_tooltip"), "Select LaunchBox folder")
+        self.assertEqual(translate("ru", "dedupe_description"), "Дедупликация дополнительных приложений")
+        self.assertEqual(translate("en", "dedupe_description"), "Additional applications deduplication")
+        self.assertEqual(translate("ru", "dedupe_dry_run"), "Проверить")
+        self.assertEqual(translate("ru", "dedupe_apply"), "Применить")
+        self.assertEqual(
+            translate("ru", "dedupe_dry_run_tooltip"),
+            "Найти дубли дополнительных приложений и записать отчеты без изменения XML-файлов.",
+        )
+        self.assertIn("резервной копии", translate("ru", "dedupe_apply_tooltip"))
+        self.assertEqual(translate("missing", "audit_group"), "Audit")
+
+    def test_cli_parser_supports_gui_command(self) -> None:
+        args = build_arg_parser().parse_args(["gui"])
+        self.assertEqual(args.command, "gui")
 
     def test_audit_platform_finds_missing_and_unregistered_files(self) -> None:
         with self.make_root() as temp_dir:
