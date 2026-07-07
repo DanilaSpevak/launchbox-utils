@@ -12,6 +12,25 @@ from .reports.audit_reports import write_reports
 from .reports.dedupe_reports import write_dedupe_reports
 
 
+def _default_command() -> str:
+    if getattr(sys, "frozen", False) and len(sys.argv) <= 1:
+        return "gui"
+    return "audit"
+
+
+def _pause_on_error_if_frozen(exit_code: int) -> None:
+    if exit_code == 0 or not getattr(sys, "frozen", False):
+        return
+    if not sys.stdin.isatty():
+        return
+
+    print("\nPress Enter to exit...", file=sys.stderr)
+    try:
+        input()
+    except EOFError:
+        pass
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Audit and maintain a LaunchBox ROM database.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to launchbox_utils.ini.")
@@ -42,7 +61,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    command = args.command or "audit"
+    command = args.command or _default_command()
     only_with_findings = getattr(args, "only_with_findings", False)
     config_path = resolve_config_path(args.config)
 
@@ -70,19 +89,19 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"Unknown command: {command}")
     except FileNotFoundError as exc:
         print(f"LaunchBox operation failed: required file not found: {exc}", file=sys.stderr)
-        return 1
+        return _finish(1)
     except ET.ParseError as exc:
         print(f"LaunchBox operation failed: XML parse error: {exc}", file=sys.stderr)
-        return 1
+        return _finish(1)
     except OSError as exc:
         print(f"LaunchBox operation failed: {exc}", file=sys.stderr)
-        return 1
+        return _finish(1)
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
-        return 1
+        return _finish(1)
     except MutationBlockedError as exc:
         print(f"LaunchBox operation aborted: {exc}", file=sys.stderr)
-        return 1
+        return _finish(1)
 
     if command == "audit":
         missing_count = sum(len(result.missing_on_disk) for result in results)
@@ -111,5 +130,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {result.platform.name}: {result.error}", file=sys.stderr)
     print(f"Reports written to: {output_dir}")
     if command == "dedupe-additional-apps" and any(result.error for result in results):
-        return 1
-    return 0
+        return _finish(1)
+    return _finish(0)
+
+
+def _finish(exit_code: int) -> int:
+    _pause_on_error_if_frozen(exit_code)
+    return exit_code

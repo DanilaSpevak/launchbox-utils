@@ -36,7 +36,7 @@
 1. Скачайте `LaunchBoxUtils-nightly-win64.zip`.
 2. Распакуйте папку `LaunchBoxUtils`.
 3. Скопируйте `launchbox_utils.example.ini` в `launchbox_utils.ini` рядом с `LaunchBoxUtils.exe` и укажите свои пути.
-4. Запустите GUI:
+4. Запустите GUI двойным щелчком по `LaunchBoxUtils.exe` или из командной строки:
 
 ```powershell
 .\LaunchBoxUtils.exe gui

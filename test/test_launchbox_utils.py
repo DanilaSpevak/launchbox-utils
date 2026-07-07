@@ -1,10 +1,11 @@
 import csv
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from launchbox_tools.cli import build_arg_parser
+from launchbox_tools.cli import _default_command, build_arg_parser
 from launchbox_tools.config import (
     ConfigError,
     detect_default_language,
@@ -336,6 +337,14 @@ language = fr
     def test_cli_parser_supports_gui_command(self) -> None:
         args = build_arg_parser().parse_args(["gui"])
         self.assertEqual(args.command, "gui")
+
+    def test_default_command_uses_gui_for_frozen_exe_without_args(self) -> None:
+        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "argv", ["LaunchBoxUtils.exe"]):
+            self.assertEqual(_default_command(), "gui")
+
+    def test_default_command_uses_audit_for_source_without_args(self) -> None:
+        with patch.object(sys, "frozen", False, create=True), patch.object(sys, "argv", ["launchbox_utils.py"]):
+            self.assertEqual(_default_command(), "audit")
 
     def test_audit_platform_finds_missing_and_unregistered_files(self) -> None:
         with self.make_root() as temp_dir:

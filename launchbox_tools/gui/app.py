@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import threading
 import traceback
 import tkinter as tk
@@ -421,7 +422,13 @@ class LaunchBoxUtilsApp:
 
 
 def run_gui(config_path: Path) -> int:
-    root = tk.Tk()
-    LaunchBoxUtilsApp(root, config_path)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        LaunchBoxUtilsApp(root, config_path)
+        root.mainloop()
+    except Exception:
+        if getattr(sys, "frozen", False):
+            messagebox.showerror("LaunchBox Utils", traceback.format_exc())
+            return 1
+        raise
     return 0
