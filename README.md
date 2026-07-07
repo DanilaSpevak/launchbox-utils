@@ -250,7 +250,7 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 <output_dir>\<PlatformName>\duplicate_additional_apps.txt
 ```
 
-- `duplicate_additional_apps.csv` — сводная таблица (кодировка cp1251 и `;` для корректного открытия кириллицы в Excel на русской Windows).
+- `duplicate_additional_apps.csv` — сводная таблица (кодировка UTF-8 с BOM, разделитель `;`, первая строка `sep=;` для Excel).
 - `duplicate_additional_apps.txt` — детали по платформе: какие записи удалить и какие оставить.
 
 Перед apply рекомендуется просмотреть отчёты dry-run.

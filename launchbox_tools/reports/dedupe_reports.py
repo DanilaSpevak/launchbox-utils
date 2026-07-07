@@ -37,10 +37,7 @@ def write_dedupe_reports(
     if only_with_findings and not summary_results:
         summary_csv.unlink(missing_ok=True)
     else:
-        # Excel on Russian Windows often opens .csv files with the system ANSI codepage,
-        # even when Notepad++ correctly detects Unicode. cp1251 is the most reliable
-        # double-click format for Cyrillic CSV in that environment.
-        with summary_csv.open("w", encoding="cp1251", errors="replace", newline="") as file:
+        with summary_csv.open("w", encoding="utf-8-sig", newline="") as file:
             file.write("sep=;\n")
             writer = csv.writer(file, delimiter=";")
             writer.writerow(

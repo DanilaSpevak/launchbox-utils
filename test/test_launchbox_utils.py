@@ -458,7 +458,7 @@ language = fr
             self.assertIn("Mode: dry-run", report_text)
             self.assertIn("Удалить этот дубль", report_text)
 
-            summary_text = (output_dir / "duplicate_additional_apps.csv").read_text(encoding="cp1251")
+            summary_text = (output_dir / "duplicate_additional_apps.csv").read_text(encoding="utf-8-sig")
             self.assertTrue(summary_text.startswith("sep=;\n"))
             self.assertIn("Удалить этот дубль", summary_text)
 
@@ -641,7 +641,7 @@ language = fr
             stale_platform_dir = output_dir / "Nintendo Entertainment System"
             stale_platform_dir.mkdir(parents=True)
             (stale_platform_dir / "duplicate_additional_apps.txt").write_text("stale", encoding="utf-8")
-            (output_dir / "duplicate_additional_apps.csv").write_text("stale", encoding="cp1251")
+            (output_dir / "duplicate_additional_apps.csv").write_text("stale", encoding="utf-8-sig")
 
             write_dedupe_reports(results, output_dir, apply_changes=False, only_with_findings=True)
 
