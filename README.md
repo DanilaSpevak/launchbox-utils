@@ -7,8 +7,10 @@
 ## Возможности
 
 - **Аудит ROM** — сравнение базы LaunchBox с файлами на диске: отсутствующие файлы, лишние файлы в ROM-папке, предупреждения по платформам.
-- **Дедупликация Additional Apps** — поиск и удаление дублирующих `<AdditionalApplication>` с dry-run по умолчанию и резервным копированием перед apply.
+- **Дедупликация дополнительных приложений** — поиск и удаление дублирующих `<AdditionalApplication>` с dry-run по умолчанию и резервным копированием перед apply.
 - **CLI и GUI** — одна и та же бизнес-логика; GUI сохраняет настройки в `launchbox_utils.ini`.
+
+
 
 ## Требования
 
@@ -16,6 +18,8 @@
 - Python 3.10 или новее.
 - Закрытый LaunchBox перед командами и операциями GUI, которые меняют XML.
 - Внешние Python-библиотеки не нужны.
+
+
 
 ## Конфигурация
 
@@ -40,18 +44,26 @@ output_dir = AuditReports
 language = ru
 ```
 
+
+
 ### Секция `[paths]`
 
-| Параметр | Описание |
-| --- | --- |
-| `launchbox_root` | Корневая папка LaunchBox. |
-| `output_dir` | Папка для отчётов. Относительный путь считается от `launchbox_root`; абсолютный используется как есть. |
+
+| Параметр         | Описание                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------ |
+| `launchbox_root` | Корневая папка LaunchBox.                                                                              |
+| `output_dir`     | Папка для отчётов. Относительный путь считается от `launchbox_root`; абсолютный используется как есть. |
+
+
+
 
 ### Секция `[interface]`
 
-| Параметр | Описание |
-| --- | --- |
+
+| Параметр   | Описание                                                                                                                                                                                 |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `language` | Язык GUI: `ru` или `en`. Сохраняется при переключении кнопками `RU` / `EN`. Если параметр не задан или указан неверно, язык выбирается по системной локали (русская → `ru`, иначе `en`). |
+
 
 CLI не использует `[interface]` — только GUI.
 
@@ -78,12 +90,16 @@ python launchbox_utils.py gui
 python launchbox_utils.py --config "D:\Configs\launchbox_utils.ini" gui
 ```
 
+
+
 ### Папки и язык
 
 - Поля **LaunchBox folder** и **Output folder** читаются из `launchbox_utils.ini`.
 - Папки можно редактировать вручную, выбрать через кнопку с иконкой папки или открыть в проводнике кнопкой `↗`.
 - Изменения путей автоматически сохраняются в `launchbox_utils.ini` (секция `[paths]`).
 - Язык интерфейса переключается кнопками `RU` и `EN` и сохраняется в `[interface] language`.
+
+
 
 ### Группы операций
 
@@ -105,6 +121,8 @@ python launchbox_utils.py --config "D:\Configs\launchbox_utils.ini" gui
 
 - Операции выполняются в фоновом потоке, форма не блокируется.
 - Результаты выводятся в поле логов; лог можно очистить кнопкой **Clear logs / Очистить логи**.
+
+
 
 ## Аудит ROM-файлов
 
@@ -153,6 +171,8 @@ python launchbox_utils.py --config "D:\Configs\launchbox_utils.ini" audit
 python launchbox_utils.py audit --only-with-findings
 ```
 
+
+
 ### Отчёты аудита
 
 Отчёты создаются в настроенной папке `output_dir` (по умолчанию `<LaunchBox>\AuditReports`).
@@ -198,6 +218,8 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 python launchbox_utils.py dedupe-additional-apps --only-with-findings
 ```
 
+
+
 ### Apply
 
 Перед запуском обязательно закройте LaunchBox.
@@ -218,6 +240,8 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 - удаляет только дублирующие `<AdditionalApplication>`;
 - не удаляет `<Game>`;
 - записывает XML во временный файл, проверяет парсинг и только после этого заменяет оригинал.
+
+
 
 ### Отчёты по дедупликации
 
@@ -259,6 +283,8 @@ python launchbox_utils.py dedupe-additional-apps --apply
 python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision" --apply
 ```
 
+
+
 ## Тесты
 
 Тесты находятся в папке `test`.
@@ -275,6 +301,8 @@ python -m unittest -v test\test_launchbox_utils.py
 
 - [Architecture notes](ARCHITECTURE.md)
 - [Roadmap](ROADMAP.md)
+
+
 
 ## Структура проекта
 

@@ -8,7 +8,13 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from ..config import load_raw_path_config, resolve_initial_language, save_interface_language, save_raw_path_config
+from ..config import (
+    load_configured_only_with_findings,
+    load_raw_path_config,
+    resolve_initial_language,
+    save_interface_language,
+    save_raw_path_config,
+)
 from ..operations.audit import run_audit
 from ..operations.dedupe_additional_apps import run_additional_apps_dedupe
 from ..reports.audit_reports import write_reports
@@ -72,7 +78,8 @@ class LaunchBoxUtilsApp:
         raw_config = load_raw_path_config(config_path)
         self.launchbox_root_var = tk.StringVar(value=raw_config.launchbox_root)
         self.output_dir_var = tk.StringVar(value=raw_config.output_dir)
-        self.audit_output_mode_var = tk.StringVar(value="full")
+        output_mode = "findings" if load_configured_only_with_findings(config_path) else "full"
+        self.audit_output_mode_var = tk.StringVar(value=output_mode)
 
         self.translatable_widgets: dict[str, ttk.Widget | tk.Widget] = {}
         self.build_form()
@@ -220,6 +227,7 @@ class LaunchBoxUtilsApp:
     def setup_config_autosave(self) -> None:
         self.launchbox_root_var.trace_add("write", self.schedule_config_save)
         self.output_dir_var.trace_add("write", self.schedule_config_save)
+        self.audit_output_mode_var.trace_add("write", self.schedule_config_save)
 
     def schedule_config_save(self, *_args) -> None:
         if self.config_save_after_id is not None:
@@ -246,7 +254,12 @@ class LaunchBoxUtilsApp:
         self.save_config(log=True)
 
     def save_config(self, log: bool = True) -> None:
-        save_raw_path_config(self.config_path, self.launchbox_root_var.get(), self.output_dir_var.get())
+        save_raw_path_config(
+            self.config_path,
+            self.launchbox_root_var.get(),
+            self.output_dir_var.get(),
+            only_with_findings=self.audit_output_mode_var.get() == "findings",
+        )
         if log:
             self.append_log(self.t("saved_config"))
 

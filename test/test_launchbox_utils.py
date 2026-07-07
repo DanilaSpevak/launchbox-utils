@@ -10,6 +10,7 @@ from launchbox_tools.config import (
     detect_default_language,
     load_app_config,
     load_configured_language,
+    load_configured_only_with_findings,
     load_raw_path_config,
     normalize_path_text,
     resolve_initial_language,
@@ -244,6 +245,66 @@ language = fr
             raw_config = load_raw_path_config(config_path)
             self.assertEqual(raw_config.launchbox_root, r"D:\Games\LaunchBox")
             self.assertEqual(raw_config.output_dir, "AuditReports")
+
+    def test_load_configured_only_with_findings_defaults_to_false(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+
+            self.assertFalse(load_configured_only_with_findings(config_path))
+
+    def test_save_raw_path_config_round_trip_for_only_with_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+
+            save_raw_path_config(
+                config_path,
+                r"D:\Games\LaunchBox",
+                "AuditReports",
+                only_with_findings=True,
+            )
+
+            self.assertTrue(load_configured_only_with_findings(config_path))
+
+            save_raw_path_config(
+                config_path,
+                r"D:\Games\LaunchBox",
+                "AuditReports",
+                only_with_findings=False,
+            )
+
+            self.assertFalse(load_configured_only_with_findings(config_path))
+
+    def test_save_interface_language_preserves_only_with_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+
+            save_raw_path_config(
+                config_path,
+                r"D:\Games\LaunchBox",
+                "AuditReports",
+                only_with_findings=True,
+            )
+            save_interface_language(config_path, "ru")
+
+            self.assertEqual(load_configured_language(config_path), "ru")
+            self.assertTrue(load_configured_only_with_findings(config_path))
+
+    def test_save_raw_path_config_without_only_with_findings_preserves_existing_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+
+            save_raw_path_config(
+                config_path,
+                r"D:\Games\LaunchBox",
+                "AuditReports",
+                only_with_findings=True,
+            )
+            save_raw_path_config(config_path, r"D:\LaunchBox", "Reports")
+
+            self.assertTrue(load_configured_only_with_findings(config_path))
+            raw_config = load_raw_path_config(config_path)
+            self.assertEqual(raw_config.launchbox_root, r"D:\LaunchBox")
+            self.assertEqual(raw_config.output_dir, "Reports")
 
     def test_save_interface_language_rejects_unsupported_language(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

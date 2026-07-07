@@ -11,10 +11,10 @@ from pathlib import Path
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "launchbox_utils.ini"
 EXAMPLE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "launchbox_utils.example.ini"
 WINDOWS_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
-DEDUPLICATE_BY_RESOLVED_PATH = True
 SUPPORTED_LANGUAGES = frozenset({"en", "ru"})
 INTERFACE_SECTION = "interface"
 LANGUAGE_OPTION = "language"
+ONLY_WITH_FINDINGS_OPTION = "only_with_findings"
 
 
 @dataclass(frozen=True)
@@ -101,6 +101,23 @@ def load_configured_language(config_path: Path) -> str | None:
     return None
 
 
+def load_configured_only_with_findings(config_path: Path) -> bool:
+    if not config_path.exists():
+        return False
+
+    parser = load_config_file(config_path)
+    raw_value = get_config_value(parser, INTERFACE_SECTION, ONLY_WITH_FINDINGS_OPTION)
+    if raw_value is None:
+        return False
+
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return False
+
+
 def resolve_initial_language(config_path: Path) -> str:
     configured_language = load_configured_language(config_path)
     if configured_language is not None:
@@ -123,13 +140,23 @@ def save_interface_language(config_path: Path, language: str) -> None:
         parser.write(file)
 
 
-def save_raw_path_config(config_path: Path, launchbox_root: str, output_dir: str) -> None:
+def save_raw_path_config(
+    config_path: Path,
+    launchbox_root: str,
+    output_dir: str,
+    only_with_findings: bool | None = None,
+) -> None:
     parser = load_config_file(config_path) if config_path.exists() else configparser.ConfigParser()
     if not parser.has_section("paths"):
         parser.add_section("paths")
 
     parser.set("paths", "launchbox_root", normalize_path_text(launchbox_root))
     parser.set("paths", "output_dir", normalize_path_text(output_dir))
+
+    if only_with_findings is not None:
+        if not parser.has_section(INTERFACE_SECTION):
+            parser.add_section(INTERFACE_SECTION)
+        parser.set(INTERFACE_SECTION, ONLY_WITH_FINDINGS_OPTION, "true" if only_with_findings else "false")
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     with config_path.open("w", encoding="utf-8") as file:

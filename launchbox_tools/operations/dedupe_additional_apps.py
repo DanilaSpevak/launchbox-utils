@@ -4,14 +4,13 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-from ..config import DEDUPLICATE_BY_RESOLVED_PATH
 from ..models import AdditionalApplicationDuplicate, AdditionalAppsDedupeResult, GameEntry, PlatformInfo
 from ..paths import path_key
 from ..safe_write import backup_platform_xml, write_xml_tree_safely
 from ..xml_repository import load_application_entries, load_platforms, parse_xml_tree
 
 
-def additional_app_dedupe_key(root: Path, entry: GameEntry) -> tuple[str, str] | None:
+def additional_app_dedupe_key(entry: GameEntry) -> tuple[str, str] | None:
     if entry.entry_type != "AdditionalApplication":
         return None
 
@@ -20,8 +19,7 @@ def additional_app_dedupe_key(root: Path, entry: GameEntry) -> tuple[str, str] |
     if not game_id or not application_path:
         return None
 
-    path_part = path_key(entry.resolved_path) if DEDUPLICATE_BY_RESOLVED_PATH else application_path.casefold()
-    return game_id.casefold(), path_part
+    return game_id.casefold(), path_key(entry.resolved_path)
 
 
 def find_additional_app_duplicates(
@@ -37,7 +35,7 @@ def find_additional_app_duplicates(
         if entry.entry_type != "AdditionalApplication":
             continue
 
-        key = additional_app_dedupe_key(root, entry)
+        key = additional_app_dedupe_key(entry)
         if key is None:
             warnings.append(f"AdditionalApplication skipped for dedupe because GameID or ApplicationPath is empty: {entry.title}")
             continue
