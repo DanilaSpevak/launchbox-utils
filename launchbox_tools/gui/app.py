@@ -8,7 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from ..config import load_raw_path_config, save_raw_path_config
+from ..config import load_raw_path_config, resolve_initial_language, save_interface_language, save_raw_path_config
 from ..operations.audit import run_audit
 from ..operations.dedupe_additional_apps import run_additional_apps_dedupe
 from ..reports.audit_reports import write_reports
@@ -63,7 +63,7 @@ class LaunchBoxUtilsApp:
     def __init__(self, root: tk.Tk, config_path: Path) -> None:
         self.root = root
         self.config_path = config_path
-        self.language = "ru"
+        self.language = resolve_initial_language(config_path)
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.worker: threading.Thread | None = None
         self.config_save_after_id: str | None = None
@@ -212,6 +212,7 @@ class LaunchBoxUtilsApp:
     def set_language(self, language: str) -> None:
         self.language = language
         self.apply_language()
+        save_interface_language(self.config_path, language)
 
     def setup_config_autosave(self) -> None:
         self.launchbox_root_var.trace_add("write", self.schedule_config_save)

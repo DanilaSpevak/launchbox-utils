@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import configparser
+import locale
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +12,9 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "launchbox_utils.
 EXAMPLE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "launchbox_utils.example.ini"
 WINDOWS_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 DEDUPLICATE_BY_RESOLVED_PATH = True
+SUPPORTED_LANGUAGES = frozenset({"en", "ru"})
+INTERFACE_SECTION = "interface"
+LANGUAGE_OPTION = "language"
 
 
 @dataclass(frozen=True)
@@ -60,6 +65,62 @@ def load_raw_path_config(config_path: Path) -> RawPathConfig:
         launchbox_root=normalize_path_text(get_config_value(parser, "paths", "launchbox_root") or ""),
         output_dir=normalize_path_text(get_config_value(parser, "paths", "output_dir") or ""),
     )
+
+
+def _system_locale_codes() -> list[str]:
+    codes: list[str] = []
+    for getter in (locale.getlocale, locale.getdefaultlocale):
+        try:
+            code = getter()[0]
+            if code:
+                codes.append(code)
+        except Exception:
+            continue
+
+    lang = os.environ.get("LANG", "").split(".")[0]
+    if lang:
+        codes.append(lang)
+    return codes
+
+
+def detect_default_language() -> str:
+    for code in _system_locale_codes():
+        if code.lower().startswith("ru"):
+            return "ru"
+    return "en"
+
+
+def load_configured_language(config_path: Path) -> str | None:
+    if not config_path.exists():
+        return None
+
+    parser = load_config_file(config_path)
+    language = get_config_value(parser, INTERFACE_SECTION, LANGUAGE_OPTION)
+    if language in SUPPORTED_LANGUAGES:
+        return language
+    return None
+
+
+def resolve_initial_language(config_path: Path) -> str:
+    configured_language = load_configured_language(config_path)
+    if configured_language is not None:
+        return configured_language
+    return detect_default_language()
+
+
+def save_interface_language(config_path: Path, language: str) -> None:
+    if language not in SUPPORTED_LANGUAGES:
+        raise ConfigError(f"Unsupported interface language: {language}")
+
+    parser = load_config_file(config_path) if config_path.exists() else configparser.ConfigParser()
+    if not parser.has_section(INTERFACE_SECTION):
+        parser.add_section(INTERFACE_SECTION)
+
+    parser.set(INTERFACE_SECTION, LANGUAGE_OPTION, language)
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with config_path.open("w", encoding="utf-8") as file:
+        parser.write(file)
 
 
 def save_raw_path_config(config_path: Path, launchbox_root: str, output_dir: str) -> None:

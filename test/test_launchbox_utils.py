@@ -5,7 +5,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from launchbox_tools.cli import build_arg_parser
-from launchbox_tools.config import ConfigError, load_app_config, load_raw_path_config, normalize_path_text, save_raw_path_config
+from launchbox_tools.config import (
+    ConfigError,
+    detect_default_language,
+    load_app_config,
+    load_configured_language,
+    load_raw_path_config,
+    normalize_path_text,
+    resolve_initial_language,
+    save_interface_language,
+    save_raw_path_config,
+)
 from launchbox_tools.gui.translations import translate
 from launchbox_tools.operations.audit import audit_platform
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
@@ -171,6 +181,76 @@ output_dir = ConfiguredReports
 
             self.assertEqual(raw_config.launchbox_root, r"D:\Games\LaunchBox")
             self.assertEqual(raw_config.output_dir, "AuditReports")
+
+    def test_detect_default_language_uses_russian_system_locale(self) -> None:
+        with patch("launchbox_tools.config._system_locale_codes", return_value=["Russian_Russia"]):
+            self.assertEqual(detect_default_language(), "ru")
+
+        with patch("launchbox_tools.config._system_locale_codes", return_value=["ru_RU"]):
+            self.assertEqual(detect_default_language(), "ru")
+
+    def test_detect_default_language_uses_english_for_non_russian_locale(self) -> None:
+        with patch("launchbox_tools.config._system_locale_codes", return_value=["en_US"]):
+            self.assertEqual(detect_default_language(), "en")
+
+    def test_resolve_initial_language_reads_configured_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+            config_path.write_text(
+                """[interface]
+language = en
+""",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(resolve_initial_language(config_path), "en")
+
+    def test_resolve_initial_language_falls_back_to_system_locale(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+
+            with patch("launchbox_tools.config.detect_default_language", return_value="ru"):
+                self.assertEqual(resolve_initial_language(config_path), "ru")
+
+    def test_resolve_initial_language_ignores_invalid_configured_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+            config_path.write_text(
+                """[interface]
+language = fr
+""",
+                encoding="utf-8",
+            )
+
+            with patch("launchbox_tools.config.detect_default_language", return_value="en"):
+                self.assertEqual(resolve_initial_language(config_path), "en")
+
+    def test_save_interface_language_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+
+            save_interface_language(config_path, "ru")
+
+            self.assertEqual(load_configured_language(config_path), "ru")
+
+    def test_save_raw_path_config_preserves_interface_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+
+            save_interface_language(config_path, "en")
+            save_raw_path_config(config_path, r"D:\Games\LaunchBox", "AuditReports")
+
+            self.assertEqual(load_configured_language(config_path), "en")
+            raw_config = load_raw_path_config(config_path)
+            self.assertEqual(raw_config.launchbox_root, r"D:\Games\LaunchBox")
+            self.assertEqual(raw_config.output_dir, "AuditReports")
+
+    def test_save_interface_language_rejects_unsupported_language(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "launchbox_utils.ini"
+
+            with self.assertRaises(ConfigError):
+                save_interface_language(config_path, "fr")
 
     def test_normalize_path_text_collapses_duplicate_separators(self) -> None:
         self.assertEqual(normalize_path_text(r"literal:D:\\Games\\LaunchBox"), r"D:\Games\LaunchBox")
