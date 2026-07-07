@@ -2,6 +2,8 @@
 
 Python-скрипт для проверки ROM-файлов LaunchBox и обслуживания записей `AdditionalApplication`.
 
+> Проект разрабатывается с помощью ИИ-ассистента. Перед применением операций, изменяющих XML-базы LaunchBox, проверяйте отчеты dry-run и наличие резервных копий.
+
 Настройки путей задаются через файл `launchbox_utils.ini` или параметры командной строки.
 
 Пример файла конфигурации:
@@ -208,6 +210,11 @@ python -m unittest -v test\test_launchbox_utils.py
 ```
 
 Тесты используют временную фиктивную структуру LaunchBox и не меняют реальную базу.
+
+## Development
+
+- [Architecture notes](ARCHITECTURE.md)
+- [Roadmap](ROADMAP.md)
 
 ## Структура проекта
 
