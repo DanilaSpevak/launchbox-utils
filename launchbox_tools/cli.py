@@ -93,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         duplicate_count = sum(len(result.duplicates) for result in results)
         changed_count = sum(1 for result in results if result.applied)
         warning_count = sum(len(result.warnings) for result in results)
+        failed_results = [result for result in results if result.error]
         mode = "apply" if args.apply else "dry-run"
 
         print(f"Dedupe mode: {mode}")
@@ -100,5 +101,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Duplicate AdditionalApplication entries: {duplicate_count}")
         print(f"Changed platform XML files: {changed_count}")
         print(f"Warnings: {warning_count}")
+        if failed_results:
+            print(f"Failed platforms: {len(failed_results)}", file=sys.stderr)
+            for result in failed_results:
+                print(f"  {result.platform.name}: {result.error}", file=sys.stderr)
     print(f"Reports written to: {output_dir}")
+    if command == "dedupe-additional-apps" and any(result.error for result in results):
+        return 1
     return 0

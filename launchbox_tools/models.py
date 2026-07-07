@@ -49,3 +49,4 @@ class AdditionalAppsDedupeResult:
     warnings: list[str] = field(default_factory=list)
     backup_path: Path | None = None
     applied: bool = False
+    error: str | None = None

@@ -48,11 +48,7 @@ def audit_platform(platform: PlatformInfo, root: Path) -> PlatformAuditResult:
     folder_paths, folder_warnings = scan_folder(platform.folder)
     result.warnings.extend(folder_warnings)
     result.folder_count = len(folder_paths)
-
-    if folder_warnings:
-        result.missing_on_disk = list(games)
-    else:
-        result.missing_on_disk = [game for game in games if not game.resolved_path.exists()]
+    result.missing_on_disk = [game for game in games if not game.resolved_path.exists()]
 
     for key, path in folder_paths.items():
         if key not in database_paths:

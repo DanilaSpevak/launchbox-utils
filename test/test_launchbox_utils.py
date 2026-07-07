@@ -2,12 +2,14 @@ import csv
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from launchbox_tools.cli import build_arg_parser
 from launchbox_tools.config import ConfigError, load_app_config, load_raw_path_config, normalize_path_text, save_raw_path_config
 from launchbox_tools.gui.translations import translate
 from launchbox_tools.operations.audit import audit_platform
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
+from launchbox_tools.safe_write import write_xml_tree_safely as real_write_xml_tree_safely
 from launchbox_tools.paths import safe_report_dir_name
 from launchbox_tools.reports.audit_reports import write_reports
 from launchbox_tools.reports.dedupe_reports import write_dedupe_reports
@@ -60,6 +62,45 @@ class LaunchBoxAuditTests(unittest.TestCase):
 """,
             encoding="utf-8",
         )
+
+    def write_two_platforms_xml(self, root: Path) -> None:
+        (root / "Data" / "Platforms.xml").write_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<ArrayOfPlatform>
+  <Platform>
+    <Name>Nintendo Entertainment System</Name>
+    <Folder>Games/NES</Folder>
+  </Platform>
+  <Platform>
+    <Name>Sega Genesis</Name>
+    <Folder>Games/Genesis</Folder>
+  </Platform>
+</ArrayOfPlatform>
+""",
+            encoding="utf-8",
+        )
+
+    def write_platform_games_xml_raw(self, root: Path, platform_name: str, body: str) -> None:
+        (root / "Data" / "Platforms" / f"{platform_name}.xml").write_text(
+            f"""<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+{body}
+</LaunchBox>
+""",
+            encoding="utf-8",
+        )
+
+    def duplicate_additional_app_xml(self, game_id: str, keep_title: str, remove_title: str, path: str) -> str:
+        return f"""  <AdditionalApplication>
+    <GameID>{game_id}</GameID>
+    <Name>{keep_title}</Name>
+    <ApplicationPath>{path}</ApplicationPath>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <GameID>{game_id}</GameID>
+    <Name>{remove_title}</Name>
+    <ApplicationPath>{path}</ApplicationPath>
+  </AdditionalApplication>"""
 
     def test_load_platforms_resolves_relative_folder(self) -> None:
         with self.make_root() as temp_dir:
@@ -140,10 +181,8 @@ output_dir = ConfiguredReports
         self.assertEqual(translate("ru", "audit_group"), "Аудит")
         self.assertEqual(translate("ru", "interface_language_tooltip"), "Язык интерфейса")
         self.assertEqual(translate("en", "browse_launchbox_tooltip"), "Select LaunchBox folder")
-        self.assertEqual(translate("ru", "dedupe_description"), "Дедупликация дополнительных приложений")
-        self.assertEqual(translate("en", "dedupe_description"), "Additional applications deduplication")
-        self.assertEqual(translate("ru", "dedupe_dry_run"), "Проверить")
-        self.assertEqual(translate("ru", "dedupe_apply"), "Применить")
+        self.assertEqual(translate("ru", "dedupe_dry_run"), "Найти дубли в дополнительных приложениях")
+        self.assertEqual(translate("ru", "dedupe_apply"), "Удалить дубли дополнительных приложений")
         self.assertEqual(
             translate("ru", "dedupe_dry_run_tooltip"),
             "Найти дубли дополнительных приложений и записать отчеты без изменения XML-файлов.",
@@ -197,6 +236,27 @@ output_dir = ConfiguredReports
             self.assertEqual(result.folder_count, 0)
             self.assertEqual(sorted(game.title for game in result.missing_on_disk), ["First Game", "Second Game"])
             self.assertEqual(result.not_in_database, [])
+            self.assertTrue(any("ROM folder not found" in warning for warning in result.warnings))
+
+    def test_audit_missing_on_disk_uses_exists_even_when_rom_folder_scan_warns(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            rom_folder = root / "Games" / "NES"
+            rom_folder.mkdir(parents=True)
+            (rom_folder / "present.zip").write_bytes(b"rom")
+            self.write_platforms_xml(root, "Games/MissingFolder")
+            self.write_games_xml(
+                root,
+                [
+                    ("Present Game", "Games/NES/present.zip"),
+                    ("Missing Game", "Games/NES/missing.zip"),
+                ],
+            )
+
+            platform = load_platforms(root)[0]
+            result = audit_platform(platform, root)
+
+            self.assertEqual([game.title for game in result.missing_on_disk], ["Missing Game"])
             self.assertTrue(any("ROM folder not found" in warning for warning in result.warnings))
 
     def test_additional_application_paths_count_as_database_entries(self) -> None:
@@ -307,6 +367,47 @@ output_dir = ConfiguredReports
             results = run_additional_apps_dedupe(root, platform_filter="Missing Platform", apply_changes=False)
 
             self.assertEqual(results, [])
+
+    def test_run_additional_apps_dedupe_continues_after_apply_failure(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_two_platforms_xml(root)
+            self.write_platform_games_xml_raw(
+                root,
+                "Nintendo Entertainment System",
+                self.duplicate_additional_app_xml("game-1", "Keep NES", "Remove NES", "Games/NES/duplicate.zip"),
+            )
+            self.write_platform_games_xml_raw(
+                root,
+                "Sega Genesis",
+                self.duplicate_additional_app_xml("game-2", "Keep Genesis", "Remove Genesis", "Games/Genesis/duplicate.zip"),
+            )
+
+            write_calls = 0
+
+            def flaky_write(tree, destination: Path) -> None:
+                nonlocal write_calls
+                write_calls += 1
+                if write_calls == 2:
+                    raise OSError("simulated write failure")
+                real_write_xml_tree_safely(tree, destination)
+
+            with patch("launchbox_tools.operations.dedupe_additional_apps.write_xml_tree_safely", side_effect=flaky_write):
+                results = run_additional_apps_dedupe(root, apply_changes=True)
+
+            self.assertEqual(len(results), 2)
+            self.assertTrue(results[0].applied)
+            self.assertIsNone(results[0].error)
+            self.assertFalse(results[1].applied)
+            self.assertEqual(results[1].error, "simulated write failure")
+
+            nes_xml = parse_xml(root / "Data" / "Platforms" / "Nintendo Entertainment System.xml")
+            nes_names = [child_text(element, "Name") for element in nes_xml if local_name(element.tag) == "AdditionalApplication"]
+            self.assertEqual(nes_names, ["Keep NES"])
+
+            genesis_xml = parse_xml(root / "Data" / "Platforms" / "Sega Genesis.xml")
+            genesis_names = [child_text(element, "Name") for element in genesis_xml if local_name(element.tag) == "AdditionalApplication"]
+            self.assertEqual(len(genesis_names), 2)
 
     def test_write_reports_creates_platform_reports_and_summary_csv(self) -> None:
         with self.make_root() as temp_dir:

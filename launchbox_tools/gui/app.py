@@ -73,7 +73,6 @@ class LaunchBoxUtilsApp:
         self.launchbox_root_var = tk.StringVar(value=raw_config.launchbox_root)
         self.output_dir_var = tk.StringVar(value=raw_config.output_dir)
         self.audit_output_mode_var = tk.StringVar(value="full")
-        self.dedupe_output_mode_var = tk.StringVar(value="full")
 
         self.translatable_widgets: dict[str, ttk.Widget | tk.Widget] = {}
         self.build_form()
@@ -142,56 +141,39 @@ class LaunchBoxUtilsApp:
 
         audit_frame = ttk.LabelFrame(tools_frame, padding=10)
         audit_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        audit_frame.columnconfigure(0, weight=1)
         self.translatable_widgets["audit_group"] = audit_frame
 
-        audit_description = ttk.Label(audit_frame)
-        audit_description.grid(row=0, column=0, sticky="w", columnspan=2)
-        self.translatable_widgets["audit_description"] = audit_description
-
-        audit_output_label = ttk.Label(audit_frame)
-        audit_output_label.grid(row=1, column=0, sticky="w", pady=(8, 0), columnspan=2)
-        self.translatable_widgets["audit_output_mode"] = audit_output_label
         audit_full_radio = ttk.Radiobutton(audit_frame, variable=self.audit_output_mode_var, value="full")
-        audit_full_radio.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        audit_full_radio.grid(row=0, column=0, sticky="w")
         self.translatable_widgets["audit_full_output"] = audit_full_radio
         self.add_tooltip(audit_full_radio, "audit_output_mode_description")
         audit_findings_radio = ttk.Radiobutton(audit_frame, variable=self.audit_output_mode_var, value="findings")
-        audit_findings_radio.grid(row=2, column=1, sticky="w", pady=(4, 0))
+        audit_findings_radio.grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.translatable_widgets["audit_only_findings"] = audit_findings_radio
         self.add_tooltip(audit_findings_radio, "audit_output_mode_description")
 
         audit_button = ttk.Button(audit_frame, command=self.run_audit_operation)
-        audit_button.grid(row=3, column=0, sticky="ew", pady=(8, 0), columnspan=2)
+        audit_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.translatable_widgets["run_audit"] = audit_button
+        self.add_tooltip(audit_button, "run_audit_tooltip")
+
+        dry_run_button = ttk.Button(audit_frame, command=lambda: self.run_dedupe_operation(False))
+        dry_run_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self.translatable_widgets["dedupe_dry_run"] = dry_run_button
+        self.add_tooltip(dry_run_button, "dedupe_dry_run_tooltip")
 
         edit_frame = ttk.LabelFrame(tools_frame, padding=10)
         edit_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        edit_frame.columnconfigure(0, weight=1)
         self.translatable_widgets["edit_group"] = edit_frame
 
-        dedupe_description = ttk.Label(edit_frame)
-        dedupe_description.grid(row=0, column=0, sticky="w", columnspan=2)
-        self.translatable_widgets["dedupe_description"] = dedupe_description
-
-        dedupe_output_label = ttk.Label(edit_frame)
-        dedupe_output_label.grid(row=1, column=0, sticky="w", pady=(8, 0), columnspan=2)
-        self.translatable_widgets["dedupe_output_mode"] = dedupe_output_label
-        dedupe_full_radio = ttk.Radiobutton(edit_frame, variable=self.dedupe_output_mode_var, value="full")
-        dedupe_full_radio.grid(row=2, column=0, sticky="w", pady=(4, 0))
-        self.translatable_widgets["dedupe_full_output"] = dedupe_full_radio
-        self.add_tooltip(dedupe_full_radio, "dedupe_output_mode_description")
-        dedupe_findings_radio = ttk.Radiobutton(edit_frame, variable=self.dedupe_output_mode_var, value="findings")
-        dedupe_findings_radio.grid(row=2, column=1, sticky="w", pady=(4, 0))
-        self.translatable_widgets["dedupe_only_findings"] = dedupe_findings_radio
-        self.add_tooltip(dedupe_findings_radio, "dedupe_output_mode_description")
-
-        dry_run_button = ttk.Button(edit_frame, command=lambda: self.run_dedupe_operation(False))
-        dry_run_button.grid(row=3, column=0, sticky="ew", padx=(0, 5), pady=(8, 0))
-        self.translatable_widgets["dedupe_dry_run"] = dry_run_button
-        self.add_tooltip(dry_run_button, "dedupe_dry_run_tooltip")
         apply_button = ttk.Button(edit_frame, command=lambda: self.run_dedupe_operation(True))
-        apply_button.grid(row=3, column=1, sticky="ew", padx=(5, 0), pady=(8, 0))
+        apply_button.grid(row=0, column=0, sticky="ew")
         self.translatable_widgets["dedupe_apply"] = apply_button
         self.add_tooltip(apply_button, "dedupe_apply_tooltip")
+
+        self.root.minsize(700, 420)
 
         logs_frame = ttk.LabelFrame(self.root, padding=10)
         logs_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=(0, 10))
@@ -215,17 +197,11 @@ class LaunchBoxUtilsApp:
             "launchbox_folder": "launchbox_folder",
             "output_folder": "output_folder",
             "audit_group": "audit_group",
-            "audit_description": "audit_description",
-            "audit_output_mode": "output_mode",
             "audit_full_output": "full_output",
             "audit_only_findings": "only_findings",
             "run_audit": "run_audit",
-            "edit_group": "edit_group",
-            "dedupe_description": "dedupe_description",
-            "dedupe_output_mode": "output_mode",
-            "dedupe_full_output": "full_output",
-            "dedupe_only_findings": "only_findings",
             "dedupe_dry_run": "dedupe_dry_run",
+            "edit_group": "edit_group",
             "dedupe_apply": "dedupe_apply",
             "logs": "logs",
             "clear_logs": "clear_logs",
@@ -355,7 +331,7 @@ class LaunchBoxUtilsApp:
             return
 
         launchbox_root, output_dir = paths
-        only_with_findings = self.dedupe_output_mode_var.get() == "findings"
+        only_with_findings = self.audit_output_mode_var.get() == "findings"
 
         def worker() -> None:
             try:
@@ -366,6 +342,11 @@ class LaunchBoxUtilsApp:
                 self.enqueue_log(f"{self.t('duplicates')}: {sum(len(result.duplicates) for result in results)}")
                 self.enqueue_log(f"{self.t('changed_files')}: {sum(1 for result in results if result.applied)}")
                 self.enqueue_log(f"{self.t('warnings')}: {sum(len(result.warnings) for result in results)}")
+                failed_results = [result for result in results if result.error]
+                if failed_results:
+                    self.enqueue_log(f"{self.t('failed_platforms')}: {len(failed_results)}")
+                    for result in failed_results:
+                        self.enqueue_log(f"  {result.platform.name}: {result.error}")
                 self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
                 self.enqueue_log(self.t("finished"))
             except Exception:

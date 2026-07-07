@@ -11,7 +11,7 @@ DEDUPE_DETAIL_FILES = ("duplicate_additional_apps.txt",)
 
 
 def dedupe_result_has_findings(result: AdditionalAppsDedupeResult) -> bool:
-    return bool(result.duplicates or result.warnings)
+    return bool(result.duplicates or result.warnings or result.error)
 
 
 def cleanup_dedupe_detail_files(platform_dir: Path) -> None:
@@ -54,6 +54,7 @@ def write_dedupe_reports(
                     "kept_application_path",
                     "applied",
                     "backup_path",
+                    "error",
                     "warnings",
                 ]
             )
@@ -71,6 +72,7 @@ def write_dedupe_reports(
                                 duplicate.kept.application_path,
                                 result.applied,
                                 result.backup_path or "",
+                                result.error or "",
                                 " | ".join(result.warnings),
                             ]
                         )
@@ -86,6 +88,7 @@ def write_dedupe_reports(
                             "",
                             result.applied,
                             result.backup_path or "",
+                            result.error or "",
                             " | ".join(result.warnings),
                         ]
                     )
@@ -113,6 +116,8 @@ def write_dedupe_reports(
             file.write(f"Applied: {result.applied}\n")
             if result.backup_path:
                 file.write(f"Backup: {result.backup_path}\n")
+            if result.error:
+                file.write(f"Error: {result.error}\n")
             if result.warnings:
                 file.write("Warnings:\n")
                 for warning in result.warnings:

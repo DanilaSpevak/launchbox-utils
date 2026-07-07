@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
@@ -115,7 +116,10 @@ def run_additional_apps_dedupe(
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_root = root / "Data" / "Backups" / f"AdditionalAppsDedupe-{timestamp}"
-    return [
-        dedupe_additional_apps_for_platform(platform, root, apply_changes, backup_root)
-        for platform in platforms
-    ]
+    results: list[AdditionalAppsDedupeResult] = []
+    for platform in platforms:
+        try:
+            results.append(dedupe_additional_apps_for_platform(platform, root, apply_changes, backup_root))
+        except (ET.ParseError, OSError) as exc:
+            results.append(AdditionalAppsDedupeResult(platform=platform, error=str(exc)))
+    return results
