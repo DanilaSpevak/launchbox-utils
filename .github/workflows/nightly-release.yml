@@ -51,5 +51,5 @@ jobs:
           body: |
             Nightly Windows build from commit ${{ github.sha }}.
 
-            Download `LaunchBoxUtils-nightly-win64.zip`, unpack the folder, copy `launchbox_utils.example.ini` to `launchbox_utils.ini` next to `LaunchBoxUtils.exe`, and run `LaunchBoxUtils.exe gui`.
+            Download `LaunchBoxUtils-nightly-win64.zip`, unpack the folder, copy `launchbox_utils.example.ini` to `launchbox_utils.ini` next to the executables, and run `LaunchBoxUtils.exe` for the GUI or `LaunchBoxUtils-cli.exe` for CLI commands.
           files: LaunchBoxUtils-nightly-win64.zip

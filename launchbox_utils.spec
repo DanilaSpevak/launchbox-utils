@@ -23,12 +23,30 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-exe = EXE(
+exe_gui = EXE(
     pyz,
     a.scripts,
     [],
     exclude_binaries=True,
     name="LaunchBoxUtils",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
+exe_cli = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="LaunchBoxUtils-cli",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -42,7 +60,8 @@ exe = EXE(
 )
 
 coll = COLLECT(
-    exe,
+    exe_gui,
+    exe_cli,
     a.binaries,
     a.zipfiles,
     a.datas,

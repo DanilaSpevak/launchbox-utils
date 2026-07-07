@@ -39,14 +39,15 @@
 4. Запустите GUI двойным щелчком по `LaunchBoxUtils.exe` или из командной строки:
 
 ```powershell
+.\LaunchBoxUtils.exe
 .\LaunchBoxUtils.exe gui
 ```
 
-CLI-команды работают так же, как у Python-версии:
+CLI-команды запускайте через `LaunchBoxUtils-cli.exe` — у него есть консоль для вывода:
 
 ```powershell
-.\LaunchBoxUtils.exe audit
-.\LaunchBoxUtils.exe dedupe-additional-apps
+.\LaunchBoxUtils-cli.exe audit
+.\LaunchBoxUtils-cli.exe dedupe-additional-apps
 ```
 
 Python на машине не нужен.
