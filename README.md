@@ -24,8 +24,32 @@
 ## Требования
 
 - Windows.
-- Python 3.10 или новее.
+- Python 3.10 или новее **или** готовый nightly exe из [GitHub Releases](https://github.com/DanilaSpevak/launchbox-utils/releases/tag/nightly).
 - LaunchBox должен быть закрыт перед apply: утилита проверяет это автоматически и прерывает операцию, если запущены `LaunchBox.exe` / `LaunchBox Big Box.exe` или XML-файлы баз заблокированы другим процессом.
+
+
+
+## Скачать готовый exe
+
+Каждую ночь GitHub Actions собирает Windows-сборку и публикует её в pre-release [Nightly build](https://github.com/DanilaSpevak/launchbox-utils/releases/tag/nightly).
+
+1. Скачайте `LaunchBoxUtils-nightly-win64.zip`.
+2. Распакуйте папку `LaunchBoxUtils`.
+3. Скопируйте `launchbox_utils.example.ini` в `launchbox_utils.ini` рядом с `LaunchBoxUtils.exe` и укажите свои пути.
+4. Запустите GUI:
+
+```powershell
+.\LaunchBoxUtils.exe gui
+```
+
+CLI-команды работают так же, как у Python-версии:
+
+```powershell
+.\LaunchBoxUtils.exe audit
+.\LaunchBoxUtils.exe dedupe-additional-apps
+```
+
+Python на машине не нужен.
 
 
 
@@ -77,7 +101,7 @@ CLI не использует `[interface]` — только GUI.
 
 ### Приоритет настроек
 
-- `--config` — путь к INI-файлу (по умолчанию `launchbox_utils.ini` в корне проекта).
+- `--config` — путь к INI-файлу (по умолчанию `launchbox_utils.ini` рядом с exe или в корне проекта при запуске из исходников).
 - `--root` имеет приоритет над `launchbox_root` из конфига.
 - `--output` имеет приоритет над `output_dir` из конфига.
 - Если путь к LaunchBox или папка отчётов не заданы ни в параметрах, ни в конфиге, программа завершится с ошибкой конфигурации.

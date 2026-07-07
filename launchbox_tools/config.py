@@ -4,12 +4,29 @@ import configparser
 import locale
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "launchbox_utils.ini"
-EXAMPLE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "launchbox_utils.example.ini"
+def _project_root_dir() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def app_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return _project_root_dir()
+
+
+def _bundled_resource_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS"))
+    return _project_root_dir()
+
+
+DEFAULT_CONFIG_PATH = app_base_dir() / "launchbox_utils.ini"
+EXAMPLE_CONFIG_PATH = _bundled_resource_dir() / "launchbox_utils.example.ini"
 WINDOWS_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 SUPPORTED_LANGUAGES = frozenset({"en", "ru"})
 INTERFACE_SECTION = "interface"

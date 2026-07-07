@@ -13,3 +13,7 @@ AuditReports/
 *.csv
 
 launchbox_utils.ini
+
+build/
+dist/
+*.spec.bak

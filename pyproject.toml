@@ -28,5 +28,8 @@ classifiers = [
 [project.scripts]
 launchbox-utils = "launchbox_tools.cli:main"
 
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+
 [tool.setuptools.packages.find]
 include = ["launchbox_tools*"]

@@ -1,0 +1,55 @@
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and build tools
+        run: pip install -e ".[build]"
+
+      - name: Run unit tests
+        run: python -m unittest discover -s test -p "test_*.py" -v
+
+      - name: Build executable
+        run: pyinstaller launchbox_utils.spec --noconfirm
+
+      - name: Copy example config next to executable
+        shell: pwsh
+        run: |
+          Copy-Item dist/LaunchBoxUtils/_internal/launchbox_utils.example.ini dist/LaunchBoxUtils/launchbox_utils.example.ini
+
+      - name: Create release archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/LaunchBoxUtils -DestinationPath LaunchBoxUtils-nightly-win64.zip -Force
+
+      - name: Publish nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly build
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          generate_release_notes: false
+          body: |
+            Nightly Windows build from commit ${{ github.sha }}.
+
+            Download `LaunchBoxUtils-nightly-win64.zip`, unpack the folder, copy `launchbox_utils.example.ini` to `launchbox_utils.ini` next to `LaunchBoxUtils.exe`, and run `LaunchBoxUtils.exe gui`.
+          files: LaunchBoxUtils-nightly-win64.zip
