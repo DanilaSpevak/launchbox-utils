@@ -24,7 +24,7 @@ Edit `launchbox_utils.ini` with your local LaunchBox paths for manual testing.
 ## Running Tests
 
 ```powershell
-python -m unittest -v test\test_launchbox_utils.py
+python -m unittest discover -s test -p "test_*.py" -v
 ```
 
 Tests use temporary fake LaunchBox trees and must not modify a real database.

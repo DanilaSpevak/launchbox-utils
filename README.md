@@ -310,7 +310,7 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 Запуск:
 
 ```powershell
-python -m unittest -v test\test_launchbox_utils.py
+python -m unittest discover -s test -p "test_*.py" -v
 ```
 
 Тесты используют временную фиктивную структуру LaunchBox и не меняют реальную базу.
