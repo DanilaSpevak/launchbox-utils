@@ -30,7 +30,7 @@
 
 Настройки задаются через `launchbox_utils.ini` или параметры командной строки.
 
-В репозитории есть пример `launchbox_utils.example.ini`. Скопируйте его в `launchbox_utils.ini` и укажите свои пути. Реальный `launchbox_utils.ini` добавлен в `.gitignore`, чтобы локальные пути не попадали в GitHub.
+В репозитории есть пример `launchbox_utils.example.ini`. Скопируйте его в `launchbox_utils.ini` и укажите свои пути.
 
 Файл конфигурации по умолчанию:
 
@@ -78,8 +78,6 @@ CLI не использует `[interface]` — только GUI.
 - `--root` имеет приоритет над `launchbox_root` из конфига.
 - `--output` имеет приоритет над `output_dir` из конфига.
 - Если путь к LaunchBox или папка отчётов не заданы ни в параметрах, ни в конфиге, программа завершится с ошибкой конфигурации.
-
-При сохранении из GUI пути нормализуются: лишние обратные слэши в обычных путях схлопываются; UNC-пути (`\\server\share\...`) сохраняют префикс.
 
 ## Графический интерфейс
 
@@ -314,38 +312,3 @@ python -m unittest -v test\test_launchbox_utils.py
 ```
 
 Тесты используют временную фиктивную структуру LaunchBox и не меняют реальную базу.
-
-## Development
-
-- [Architecture notes](ARCHITECTURE.md)
-- [Roadmap](ROADMAP.md)
-
-
-
-## Структура проекта
-
-`launchbox_utils.py` — точка входа для запуска из командной строки.
-
-Основная логика находится в пакете `launchbox_tools`:
-
-```text
-launchbox_tools\
-  cli.py                         # команды CLI
-  config.py                      # чтение и сохранение launchbox_utils.ini
-  models.py                      # dataclass-модели
-  paths.py                       # нормализация путей и имён папок отчётов
-  xml_repository.py              # чтение XML LaunchBox
-  runtime_checks.py              # проверка запущенного LaunchBox и блокировки XML
-  safe_write.py                  # backup и безопасная запись XML
-  operations\
-    audit.py                     # аудит ROM-файлов
-    dedupe_additional_apps.py    # поиск и удаление дублей AdditionalApplication
-  reports\
-    audit_reports.py             # отчёты аудита
-    dedupe_reports.py            # отчёты по дублям
-  gui\
-    app.py                       # Tkinter GUI
-    translations.py              # RU/EN переводы интерфейса
-```
-
-Новые операции лучше добавлять в `launchbox_tools\operations`, а генерацию отчётов для них — в `launchbox_tools\reports`. CLI и GUI должны только вызывать эти операции, не дублируя бизнес-логику.
