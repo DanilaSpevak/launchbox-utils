@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from .config import ConfigError, DEFAULT_CONFIG_PATH, load_app_config, resolve_config_path
 from .runtime_checks import MutationBlockedError
@@ -12,9 +13,36 @@ from .reports.audit_reports import write_reports
 from .reports.dedupe_reports import write_dedupe_reports
 
 
-def _default_command() -> str:
-    if getattr(sys, "frozen", False) and len(sys.argv) <= 1:
+def _executable_stem() -> str:
+    return Path(sys.executable).stem.lower()
+
+
+def _is_packaged_gui_executable() -> bool:
+    return getattr(sys, "frozen", False) and _executable_stem() == "launchboxutils"
+
+
+def _is_packaged_cli_executable() -> bool:
+    return getattr(sys, "frozen", False) and _executable_stem() == "launchboxutils-cli"
+
+
+def _has_no_user_args(argv: list[str] | None) -> bool:
+    if argv is not None:
+        return len(argv) == 0
+    return len(sys.argv) <= 1
+
+
+def _resolve_command(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    argv: list[str] | None,
+) -> str | None:
+    if args.command is not None:
+        return args.command
+    if _is_packaged_gui_executable() and _has_no_user_args(argv):
         return "gui"
+    if _is_packaged_cli_executable() and _has_no_user_args(argv):
+        parser.print_help()
+        return None
     return "audit"
 
 
@@ -61,7 +89,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    command = args.command or _default_command()
+    command = _resolve_command(parser, args, argv)
+    if command is None:
+        return 0
     only_with_findings = getattr(args, "only_with_findings", False)
     config_path = resolve_config_path(args.config)
 

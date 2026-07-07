@@ -43,7 +43,7 @@
 .\LaunchBoxUtils.exe gui
 ```
 
-CLI-команды запускайте через `LaunchBoxUtils-cli.exe` — у него есть консоль для вывода:
+CLI-команды запускайте через `LaunchBoxUtils-cli.exe` — у него есть консоль для вывода. Без аргументов он показывает справку:
 
 ```powershell
 .\LaunchBoxUtils-cli.exe audit
