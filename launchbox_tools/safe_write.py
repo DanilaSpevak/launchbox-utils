@@ -6,9 +6,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .models import PlatformInfo
+from .runtime_checks import ensure_safe_to_mutate
 
 
 def backup_platform_xml(platform: PlatformInfo, backup_root: Path) -> Path:
+    ensure_safe_to_mutate([platform.database_xml])
     backup_root.mkdir(parents=True, exist_ok=True)
     backup_path = backup_root / platform.database_xml.name
     shutil.copy2(platform.database_xml, backup_path)
@@ -16,6 +18,7 @@ def backup_platform_xml(platform: PlatformInfo, backup_root: Path) -> Path:
 
 
 def write_xml_tree_safely(tree: ET.ElementTree, destination: Path) -> None:
+    ensure_safe_to_mutate([destination])
     temp_path = destination.with_name(f"{destination.name}.tmp")
     tree.write(temp_path, encoding="utf-8", xml_declaration=True)
     ET.parse(temp_path)

@@ -5,6 +5,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 from .config import ConfigError, DEFAULT_CONFIG_PATH, load_app_config, resolve_config_path
+from .runtime_checks import MutationBlockedError
 from .operations.audit import run_audit
 from .operations.dedupe_additional_apps import run_additional_apps_dedupe
 from .reports.audit_reports import write_reports
@@ -78,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
+        return 1
+    except MutationBlockedError as exc:
+        print(f"LaunchBox operation aborted: {exc}", file=sys.stderr)
         return 1
 
     if command == "audit":

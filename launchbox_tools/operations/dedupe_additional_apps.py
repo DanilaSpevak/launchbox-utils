@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ..models import AdditionalApplicationDuplicate, AdditionalAppsDedupeResult, GameEntry, PlatformInfo
 from ..paths import path_key
+from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import backup_platform_xml, write_xml_tree_safely
 from ..xml_repository import load_application_entries, load_platforms, parse_xml_tree
 
@@ -111,6 +112,10 @@ def run_additional_apps_dedupe(
     platforms = load_platforms(root)
     if platform_filter:
         platforms = [platform for platform in platforms if platform.name.casefold() == platform_filter.casefold()]
+
+    if apply_changes:
+        xml_paths = [platform.database_xml for platform in platforms if platform.database_xml.exists()]
+        ensure_safe_to_mutate(xml_paths)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_root = root / "Data" / "Backups" / f"AdditionalAppsDedupe-{timestamp}"

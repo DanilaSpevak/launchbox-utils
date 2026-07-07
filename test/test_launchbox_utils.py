@@ -20,6 +20,7 @@ from launchbox_tools.config import (
 from launchbox_tools.gui.translations import translate
 from launchbox_tools.operations.audit import audit_platform
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
+from launchbox_tools.runtime_checks import MutationBlockedError, ensure_safe_to_mutate, is_file_locked
 from launchbox_tools.safe_write import write_xml_tree_safely as real_write_xml_tree_safely
 from launchbox_tools.paths import safe_report_dir_name
 from launchbox_tools.reports.audit_reports import write_reports
@@ -329,6 +330,7 @@ language = fr
             "Найти дубли дополнительных приложений и записать отчеты без изменения XML-файлов.",
         )
         self.assertIn("резервной копии", translate("ru", "dedupe_apply_tooltip"))
+        self.assertIn("LaunchBox", translate("ru", "mutation_blocked_launchbox"))
         self.assertEqual(translate("missing", "audit_group"), "Audit")
 
     def test_cli_parser_supports_gui_command(self) -> None:
@@ -485,7 +487,8 @@ language = fr
   </AdditionalApplication>""",
             )
 
-            results = run_additional_apps_dedupe(root, apply_changes=True)
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                results = run_additional_apps_dedupe(root, apply_changes=True)
 
             self.assertTrue(results[0].applied)
             self.assertIsNotNone(results[0].backup_path)
@@ -498,6 +501,75 @@ language = fr
             self.assertIn("Keep this version", names)
             self.assertIn("Keep different game", names)
             self.assertNotIn("Remove this duplicate", names)
+
+    def test_ensure_safe_to_mutate_blocks_when_launchbox_running(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            platform = load_platforms(root)[0]
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=True):
+                with self.assertRaises(MutationBlockedError) as context:
+                    ensure_safe_to_mutate([platform.database_xml])
+
+            self.assertEqual(context.exception.reason, "launchbox_running")
+
+    def test_ensure_safe_to_mutate_blocks_when_file_locked(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            platform = load_platforms(root)[0]
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.runtime_checks.is_file_locked", return_value=True):
+                    with self.assertRaises(MutationBlockedError) as context:
+                        ensure_safe_to_mutate([platform.database_xml])
+
+            self.assertEqual(context.exception.reason, "files_locked")
+            self.assertEqual(context.exception.locked_files, [platform.database_xml])
+
+    def test_dedupe_apply_aborts_when_launchbox_running(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                self.duplicate_additional_app_xml("game-1", "Keep", "Remove", "Games/NES/duplicate.zip"),
+            )
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            before = xml_path.read_text(encoding="utf-8")
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=True):
+                with self.assertRaises(MutationBlockedError):
+                    run_additional_apps_dedupe(root, apply_changes=True)
+
+            self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
+
+    def test_dedupe_dry_run_not_blocked_when_launchbox_running(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                self.duplicate_additional_app_xml("game-1", "Keep", "Remove", "Games/NES/duplicate.zip"),
+            )
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=True):
+                results = run_additional_apps_dedupe(root, apply_changes=False)
+
+            self.assertEqual(len(results[0].duplicates), 1)
+            self.assertFalse(results[0].applied)
+
+    def test_is_file_locked_returns_false_for_unlocked_file(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            platform = load_platforms(root)[0]
+
+            self.assertFalse(is_file_locked(platform.database_xml))
 
     def test_dedupe_additional_apps_can_filter_platform(self) -> None:
         with self.make_root() as temp_dir:
@@ -534,7 +606,8 @@ language = fr
                 real_write_xml_tree_safely(tree, destination)
 
             with patch("launchbox_tools.operations.dedupe_additional_apps.write_xml_tree_safely", side_effect=flaky_write):
-                results = run_additional_apps_dedupe(root, apply_changes=True)
+                with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                    results = run_additional_apps_dedupe(root, apply_changes=True)
 
             self.assertEqual(len(results), 2)
             self.assertTrue(results[0].applied)

@@ -19,6 +19,7 @@ launchbox_tools/
   models.py                     # shared dataclasses
   paths.py                      # path normalization and report folder naming
   xml_repository.py             # LaunchBox XML reading helpers
+  runtime_checks.py             # LaunchBox process and XML file lock checks
   safe_write.py                 # backup and safe XML write helpers
   operations/
     audit.py                    # read-only ROM audit
@@ -38,6 +39,7 @@ launchbox_tools/
 - `operations/*` modules decide what should happen.
 - `reports/*` modules decide how results are written to files.
 - `xml_repository.py` owns LaunchBox XML reading helpers.
+- `runtime_checks.py` owns pre-mutation safety checks for LaunchBox process state and XML file locks.
 - `safe_write.py` owns backup and safe XML replacement behavior.
 - `config.py` owns `launchbox_utils.ini` parsing and saving.
 
@@ -93,13 +95,36 @@ Any operation that modifies LaunchBox XML must follow these rules:
 
 - Dry-run must be available and should be the default user-facing mode.
 - Apply must be explicit.
-- LaunchBox should be closed before apply.
+- Before apply, call `ensure_safe_to_mutate()` from `runtime_checks.py`.
 - A backup must be created before writing XML.
 - XML should be written to a temporary file first.
 - The temporary XML must be parsed successfully before replacing the original file.
 - Only the intended XML elements should be changed.
 
 Use `safe_write.py` for backup and safe replacement rather than writing XML directly.
+
+### Mutation Safety Checks
+
+`runtime_checks.py` enforces the rule that LaunchBox must not be running and database XML must not be locked before apply.
+
+Checks run in two layers:
+
+1. **Operation orchestrator** — `run_additional_apps_dedupe(..., apply_changes=True)` calls `ensure_safe_to_mutate()` once before processing platforms.
+2. **Write layer** — `safe_write.py` calls `ensure_safe_to_mutate()` again before backup and before replacing XML. This protects future callers that bypass the orchestrator.
+
+`ensure_safe_to_mutate(xml_paths)` aborts with `MutationBlockedError` when either condition is true:
+
+- a LaunchBox process is running (`LaunchBox.exe` or `LaunchBox Big Box.exe`, detected via `tasklist` on Windows);
+- any target XML file cannot be opened exclusively because another process holds a lock.
+
+Read-only operations (`audit`, dedupe dry-run) do not call these checks.
+
+Entry points surface the error consistently:
+
+- **CLI** — catches `MutationBlockedError`, prints to stderr, exits with code 1.
+- **GUI** — runs the check before the apply confirmation dialog and shows a localized error dialog.
+
+New write operations should call `ensure_safe_to_mutate()` at the orchestrator level and rely on `safe_write.py` for defense in depth.
 
 ## Reports
 
@@ -130,6 +155,7 @@ The `--only-with-findings` mode should avoid creating detail files for clean pla
 - Long operations run in a background thread.
 - Worker logs are passed to the UI via `queue.Queue`.
 - Path edits in the GUI are saved back to `launchbox_utils.ini`.
+- Apply operations run `ensure_safe_to_mutate()` on the UI thread before confirmation and before starting the worker.
 
 ## Adding New Operations
 
@@ -143,4 +169,4 @@ Recommended flow:
 6. Add GUI controls in `gui/app.py` only as a thin wrapper.
 7. Add tests in `test/test_launchbox_utils.py` or split tests by operation when the file becomes too large.
 
-For write operations, follow the safety rules above before exposing apply mode.
+For write operations, follow the safety rules above before exposing apply mode. Call `ensure_safe_to_mutate()` from the operation orchestrator and route writes through `safe_write.py`.

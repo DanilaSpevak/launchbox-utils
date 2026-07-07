@@ -2,12 +2,17 @@
 
 Набор утилит на Python для аудита ROM-файлов LaunchBox и обслуживания записей `AdditionalApplication`. Доступны командная строка и графический интерфейс на Tkinter.
 
-> Проект разрабатывается с помощью ИИ-ассистента. Перед применением операций, изменяющих XML-базы LaunchBox, проверяйте отчёты dry-run и наличие резервных копий.
+> Проект разрабатывается с помощью ИИ-ассистента.
+
+Перед операциями, изменяющими XML-базы LaunchBox:
+
+- проверяйте отчёты dry-run и наличие резервных копий;
+- учитывайте, что apply автоматически прерывается, если LaunchBox запущен или файлы баз заблокированы другим процессом.
 
 ## Возможности
 
 - **Аудит ROM** — сравнение базы LaunchBox с файлами на диске: отсутствующие файлы, лишние файлы в ROM-папке, предупреждения по платформам.
-- **Дедупликация дополнительных приложений** — поиск и удаление дублирующих `<AdditionalApplication>` с dry-run по умолчанию и резервным копированием перед apply.
+- **Дедупликация дополнительных приложений** — поиск и удаление дублирующих `<AdditionalApplication>` с dry-run по умолчанию, резервным копированием перед apply и автоматической проверкой, что LaunchBox закрыт и XML-файлы не заблокированы.
 - **CLI и GUI** — одна и та же бизнес-логика; GUI сохраняет настройки в `launchbox_utils.ini`.
 
 
@@ -16,7 +21,7 @@
 
 - Windows.
 - Python 3.10 или новее.
-- Закрытый LaunchBox перед командами и операциями GUI, которые меняют XML.
+- Закрытый LaunchBox перед apply: утилита проверяет это автоматически и прерывает операцию, если запущены `LaunchBox.exe` / `LaunchBox Big Box.exe` или XML-файлы баз заблокированы другим процессом.
 - Внешние Python-библиотеки не нужны.
 
 
@@ -113,7 +118,7 @@ python launchbox_utils.py --config "D:\Configs\launchbox_utils.ini" gui
 
 **Edit / Редактирование** — операции, изменяющие базу:
 
-- **Remove additional app duplicates / Удалить дубли дополнительных приложений** — apply-режим дедупликации. Перед запуском показывается подтверждение; LaunchBox должен быть закрыт.
+- **Remove additional app duplicates / Удалить дубли дополнительных приложений** — apply-режим дедупликации. Перед запуском утилита проверяет, что LaunchBox не запущен и XML-файлы не заблокированы; при нарушении показывается ошибка и операция не начинается. Затем запрашивается подтверждение.
 
 Фильтр по одной платформе (`--platform`) в GUI недоступен — только через CLI.
 
@@ -222,10 +227,21 @@ python launchbox_utils.py dedupe-additional-apps --only-with-findings
 
 ### Apply
 
-Перед запуском обязательно закройте LaunchBox.
+Перед `--apply` утилита автоматически проверяет:
+
+- не запущен ли LaunchBox (`LaunchBox.exe`, `LaunchBox Big Box.exe`);
+- не заблокированы ли XML-файлы платформ другим процессом.
+
+Если хотя бы одно условие выполняется, операция прерывается с ошибкой. В CLI сообщение выводится в stderr и программа завершается с кодом 1; в GUI показывается диалог.
 
 ```powershell
 python launchbox_utils.py dedupe-additional-apps --apply
+```
+
+Пример ошибки в CLI:
+
+```text
+LaunchBox operation aborted: LaunchBox is running. Close LaunchBox before modifying database files.
 ```
 
 Только одна платформа:
@@ -234,12 +250,14 @@ python launchbox_utils.py dedupe-additional-apps --apply
 python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision" --apply
 ```
 
-При `--apply` утилита:
+При успешном `--apply` утилита:
 
 - создаёт резервные копии XML в `<LaunchBox>\Data\Backups\AdditionalAppsDedupe-<timestamp>`;
 - удаляет только дублирующие `<AdditionalApplication>`;
 - не удаляет `<Game>`;
 - записывает XML во временный файл, проверяет парсинг и только после этого заменяет оригинал.
+
+Dry-run и аудит эти проверки не выполняют — они только читают базу.
 
 
 
@@ -317,6 +335,7 @@ launchbox_tools\
   models.py                      # dataclass-модели
   paths.py                       # нормализация путей и имён папок отчётов
   xml_repository.py              # чтение XML LaunchBox
+  runtime_checks.py              # проверка запущенного LaunchBox и блокировки XML
   safe_write.py                  # backup и безопасная запись XML
   operations\
     audit.py                     # аудит ROM-файлов

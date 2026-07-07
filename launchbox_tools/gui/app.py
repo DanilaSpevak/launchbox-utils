@@ -17,6 +17,8 @@ from ..config import (
 )
 from ..operations.audit import run_audit
 from ..operations.dedupe_additional_apps import run_additional_apps_dedupe
+from ..runtime_checks import MutationBlockedError, ensure_safe_to_mutate
+from ..xml_repository import load_platforms
 from ..reports.audit_reports import write_reports
 from ..reports.dedupe_reports import write_dedupe_reports
 from .translations import translate
@@ -340,14 +342,36 @@ class LaunchBoxUtilsApp:
 
         self.start_worker(self.t("starting_audit"), worker)
 
+    def show_mutation_blocked_error(self, exc: MutationBlockedError) -> None:
+        if exc.reason == "launchbox_running":
+            message = self.t("mutation_blocked_launchbox")
+        elif exc.reason == "files_locked":
+            if len(exc.locked_files) == 1:
+                message = self.t("mutation_blocked_files").format(path=exc.locked_files[0])
+            else:
+                paths = "\n".join(str(path) for path in exc.locked_files)
+                message = self.t("mutation_blocked_files_many").format(paths=paths)
+        else:
+            message = str(exc)
+        messagebox.showerror(self.t("mutation_blocked_title"), message)
+
     def run_dedupe_operation(self, apply_changes: bool) -> None:
         paths = self.validate_paths()
         if paths is None:
             return
-        if apply_changes and not messagebox.askyesno(self.t("confirm_apply_title"), self.t("confirm_apply_message")):
-            return
 
         launchbox_root, output_dir = paths
+        if apply_changes:
+            try:
+                platforms = load_platforms(launchbox_root)
+                xml_paths = [platform.database_xml for platform in platforms if platform.database_xml.exists()]
+                ensure_safe_to_mutate(xml_paths)
+            except MutationBlockedError as exc:
+                self.show_mutation_blocked_error(exc)
+                return
+
+        if apply_changes and not messagebox.askyesno(self.t("confirm_apply_title"), self.t("confirm_apply_message")):
+            return
         only_with_findings = self.audit_output_mode_var.get() == "findings"
 
         def worker() -> None:
