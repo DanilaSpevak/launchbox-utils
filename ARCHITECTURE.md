@@ -2,6 +2,8 @@
 
 This project is a small Python utility suite for auditing and maintaining LaunchBox data.
 
+> **Disclaimer:** This project is not affiliated with, endorsed by, or sponsored by LaunchBox.
+
 ## Goals
 
 - Keep LaunchBox database operations understandable and testable.

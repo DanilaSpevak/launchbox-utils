@@ -4,8 +4,12 @@ __pycache__/
 
 .venv/
 venv/
+*.egg-info/
 
 backups/
 tmp_verify*/
+
+AuditReports/
+*.csv
 
 launchbox_utils.ini

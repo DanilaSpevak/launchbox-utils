@@ -53,7 +53,7 @@ def normalize_path_text(raw_path: str) -> str:
         return ""
 
     # Keep the UNC prefix (\\server\share) intact, but collapse accidental
-    # doubled separators in regular paths such as literal:D:\\Games\\LaunchBox.
+    # doubled separators in regular paths such as D:\\Games\\LaunchBox.
     if path.startswith("\\\\"):
         return "\\\\" + re.sub(r"\\+", r"\\", path.lstrip("\\"))
     return re.sub(r"\\+", r"\\", path)

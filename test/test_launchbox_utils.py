@@ -315,7 +315,7 @@ language = fr
                 save_interface_language(config_path, "fr")
 
     def test_normalize_path_text_collapses_duplicate_separators(self) -> None:
-        self.assertEqual(normalize_path_text(r"literal:D:\\Games\\LaunchBox"), r"D:\Games\LaunchBox")
+        self.assertEqual(normalize_path_text(r"D:\\Games\\LaunchBox"), r"D:\Games\LaunchBox")
         self.assertEqual(normalize_path_text(r"\\server\\share\\LaunchBox"), r"\\server\share\LaunchBox")
 
     def test_gui_translations_support_russian_and_english(self) -> None:
