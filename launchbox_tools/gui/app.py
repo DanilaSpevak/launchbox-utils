@@ -144,22 +144,25 @@ class LaunchBoxUtilsApp:
         audit_frame.columnconfigure(0, weight=1)
         self.translatable_widgets["audit_group"] = audit_frame
 
-        audit_full_radio = ttk.Radiobutton(audit_frame, variable=self.audit_output_mode_var, value="full")
+        radio_frame = ttk.Frame(audit_frame)
+        radio_frame.grid(row=0, column=0, sticky="w")
+
+        audit_full_radio = ttk.Radiobutton(radio_frame, variable=self.audit_output_mode_var, value="full")
         audit_full_radio.grid(row=0, column=0, sticky="w")
         self.translatable_widgets["audit_full_output"] = audit_full_radio
         self.add_tooltip(audit_full_radio, "audit_output_mode_description")
-        audit_findings_radio = ttk.Radiobutton(audit_frame, variable=self.audit_output_mode_var, value="findings")
-        audit_findings_radio.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        audit_findings_radio = ttk.Radiobutton(radio_frame, variable=self.audit_output_mode_var, value="findings")
+        audit_findings_radio.grid(row=0, column=1, sticky="w", padx=(8, 0))
         self.translatable_widgets["audit_only_findings"] = audit_findings_radio
         self.add_tooltip(audit_findings_radio, "audit_output_mode_description")
 
         audit_button = ttk.Button(audit_frame, command=self.run_audit_operation)
-        audit_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        audit_button.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.translatable_widgets["run_audit"] = audit_button
         self.add_tooltip(audit_button, "run_audit_tooltip")
 
         dry_run_button = ttk.Button(audit_frame, command=lambda: self.run_dedupe_operation(False))
-        dry_run_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        dry_run_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.translatable_widgets["dedupe_dry_run"] = dry_run_button
         self.add_tooltip(dry_run_button, "dedupe_dry_run_tooltip")
 
