@@ -30,8 +30,7 @@ Every night, GitHub Actions builds a Windows release and publishes it as a pre-r
 
 1. Download `LaunchBoxUtils-nightly-win64.zip`.
 2. Extract the `LaunchBoxUtils` folder.
-3. Copy `launchbox_utils.example.ini` to `launchbox_utils.ini` next to `LaunchBoxUtils.exe` and set your paths.
-4. Launch the GUI by double-clicking `LaunchBoxUtils.exe` or from the command line:
+3. Launch the GUI by double-clicking `LaunchBoxUtils.exe` or from the command line:
 
 ```powershell
 .\LaunchBoxUtils.exe
@@ -51,7 +50,7 @@ Run CLI commands via `LaunchBoxUtils-cli.exe` — it has a console for output. W
 
 Settings are provided via `launchbox_utils.ini` or command-line parameters.
 
-The repository includes an example `launchbox_utils.example.ini`. Copy it to `launchbox_utils.ini` and set your paths.
+The repository includes an example `launchbox_utils.example.ini`. Copy it to `launchbox_utils.ini` and set your paths or select them via GUI.
 
 Default configuration file:
 
@@ -376,8 +375,7 @@ This project is distributed under the [MIT](LICENSE) license.
 
 1. Скачайте `LaunchBoxUtils-nightly-win64.zip`.
 2. Распакуйте папку `LaunchBoxUtils`.
-3. Скопируйте `launchbox_utils.example.ini` в `launchbox_utils.ini` рядом с `LaunchBoxUtils.exe` и укажите свои пути.
-4. Запустите GUI двойным щелчком по `LaunchBoxUtils.exe` или из командной строки:
+3. Запустите GUI двойным щелчком по `LaunchBoxUtils.exe` или из командной строки:
 
 ```powershell
 .\LaunchBoxUtils.exe
@@ -397,7 +395,7 @@ CLI-команды запускайте через `LaunchBoxUtils-cli.exe` — 
 
 Настройки задаются через `launchbox_utils.ini` или параметры командной строки.
 
-В репозитории есть пример `launchbox_utils.example.ini`. Скопируйте его в `launchbox_utils.ini` и укажите свои пути.
+В репозитории есть пример `launchbox_utils.example.ini`. Скопируйте его в `launchbox_utils.ini` и укажите свои пути либо выберите их через графический интерфейс.
 
 Файл конфигурации по умолчанию:
 
