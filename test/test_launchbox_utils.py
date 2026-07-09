@@ -21,11 +21,13 @@ from launchbox_tools.config import (
 from launchbox_tools.gui.translations import translate
 from launchbox_tools.operations.audit import audit_platform
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
+from launchbox_tools.operations.path_replacement import build_replacement_value, run_path_replacement
 from launchbox_tools.runtime_checks import MutationBlockedError, ensure_safe_to_mutate, is_file_locked
 from launchbox_tools.safe_write import write_xml_tree_safely as real_write_xml_tree_safely
 from launchbox_tools.paths import safe_report_dir_name
 from launchbox_tools.reports.audit_reports import write_reports
 from launchbox_tools.reports.dedupe_reports import write_dedupe_reports
+from launchbox_tools.reports.path_replacement_reports import write_path_replacement_reports
 from launchbox_tools.xml_repository import child_text, load_platforms, local_name, parse_xml
 
 
@@ -338,6 +340,16 @@ language = fr
         args = build_arg_parser().parse_args(["gui"])
         self.assertEqual(args.command, "gui")
 
+    def test_cli_parser_supports_replace_paths_command(self) -> None:
+        args = build_arg_parser().parse_args(
+            ["replace-paths", "--old", r"C:\OldRoms", "--new", r"D:\NewRoms", "--apply", "--platform", "NES"]
+        )
+        self.assertEqual(args.command, "replace-paths")
+        self.assertEqual(args.old, r"C:\OldRoms")
+        self.assertEqual(args.new, r"D:\NewRoms")
+        self.assertTrue(args.apply)
+        self.assertEqual(args.platform, "NES")
+
     def test_resolve_command_uses_gui_for_packaged_gui_exe_without_args(self) -> None:
         parser = build_arg_parser()
         args = parser.parse_args([])
@@ -368,6 +380,138 @@ language = fr
         ), patch.object(parser, "print_help"):
             with patch("launchbox_tools.cli.build_arg_parser", return_value=parser):
                 self.assertEqual(main([]), 0)
+
+    def test_build_replacement_value_preserves_absolute_paths(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            old_path = root / "OldRoms"
+            new_path = root / "NewRoms"
+
+            new_value, error = build_replacement_value(root, old_path, new_path, str(old_path / "NES" / "game.zip"))
+
+            self.assertIsNone(error)
+            self.assertEqual(new_value, str(new_path / "NES" / "game.zip"))
+
+    def test_build_replacement_value_preserves_relative_paths_and_forward_slashes(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+
+            new_value, error = build_replacement_value(
+                root,
+                root / "Games" / "NES",
+                root / "Games" / "SNES",
+                "Games/NES/game.zip",
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(new_value, "Games/SNES/game.zip")
+
+    def test_build_replacement_value_does_not_match_similar_prefix(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+
+            new_value, error = build_replacement_value(
+                root,
+                root / "Games" / "ROM",
+                root / "Games" / "NewROM",
+                "Games/ROMs/game.zip",
+            )
+
+            self.assertIsNone(new_value)
+            self.assertIsNone(error)
+
+    def test_path_replacement_dry_run_reports_without_changing_xml(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            before = xml_path.read_text(encoding="utf-8")
+
+            results = run_path_replacement(root, root / "Games" / "NES", root / "Games" / "SNES")
+
+            self.assertEqual(sum(len(result.replacements) for result in results), 2)
+            self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
+            self.assertFalse(any(result.applied for result in results))
+
+    def test_path_replacement_apply_updates_entries_platform_folder_and_creates_backups(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                """  <Game>
+    <Title>Main Game</Title>
+    <ApplicationPath>Games/NES/main.zip</ApplicationPath>
+  </Game>
+  <AdditionalApplication>
+    <GameID>game-1</GameID>
+    <Name>Extra</Name>
+    <ApplicationPath>Games/NES/extra.zip</ApplicationPath>
+  </AdditionalApplication>""",
+            )
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                results = run_path_replacement(root, root / "Games" / "NES", root / "Games" / "SNES", apply_changes=True)
+
+            platforms_xml = parse_xml(root / "Data" / "Platforms.xml")
+            self.assertEqual(child_text(next(platforms_xml.iter("Platform")), "Folder"), "Games/SNES")
+            platform_xml = parse_xml(root / "Data" / "Platforms" / "Nintendo Entertainment System.xml")
+            paths = [child_text(element, "ApplicationPath") for element in platform_xml if local_name(element.tag) in {"Game", "AdditionalApplication"}]
+            self.assertEqual(paths, ["Games/SNES/main.zip", "Games/SNES/extra.zip"])
+            self.assertEqual(sum(len(result.replacements) for result in results), 3)
+            self.assertTrue(any(result.backup_paths for result in results))
+            self.assertTrue(any(result.applied for result in results))
+
+    def test_path_replacement_can_filter_platform(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_two_platforms_xml(root)
+            self.write_platform_games_xml_raw(
+                root,
+                "Nintendo Entertainment System",
+                """  <Game>
+    <Title>NES Game</Title>
+    <ApplicationPath>Games/NES/game.zip</ApplicationPath>
+  </Game>""",
+            )
+            self.write_platform_games_xml_raw(
+                root,
+                "Sega Genesis",
+                """  <Game>
+    <Title>Genesis Game</Title>
+    <ApplicationPath>Games/Genesis/game.zip</ApplicationPath>
+  </Game>""",
+            )
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                results = run_path_replacement(
+                    root,
+                    root / "Games" / "NES",
+                    root / "Games" / "NewNES",
+                    platform_filter="Nintendo Entertainment System",
+                    apply_changes=True,
+                )
+
+            self.assertEqual(len(results), 1)
+            genesis_xml = parse_xml(root / "Data" / "Platforms" / "Sega Genesis.xml")
+            self.assertEqual(child_text(next(genesis_xml.iter("Game")), "ApplicationPath"), "Games/Genesis/game.zip")
+
+    def test_write_path_replacement_reports_creates_summary_and_detail(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "Reports"
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            results = run_path_replacement(root, root / "Games" / "NES", root / "Games" / "SNES")
+
+            write_path_replacement_reports(results, output_dir, apply_changes=False)
+
+            summary_text = (output_dir / "path_replacements.csv").read_text(encoding="utf-8-sig")
+            detail_text = (output_dir / "Nintendo Entertainment System" / "path_replacements.txt").read_text(encoding="utf-8")
+            self.assertIn("dry-run", summary_text)
+            self.assertIn("Games/NES/game.zip", detail_text)
+            self.assertIn("Games/SNES/game.zip", detail_text)
 
     def test_audit_platform_finds_missing_and_unregistered_files(self) -> None:
         with self.make_root() as temp_dir:

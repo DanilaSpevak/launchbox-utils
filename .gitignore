@@ -17,3 +17,5 @@ launchbox_utils.ini
 build/
 dist/
 *.spec.bak
+
+scripts/run_gui.ps1

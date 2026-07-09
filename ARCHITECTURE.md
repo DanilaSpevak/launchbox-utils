@@ -26,9 +26,11 @@ launchbox_tools/
   operations/
     audit.py                    # read-only ROM audit
     dedupe_additional_apps.py   # AdditionalApplication dedupe operation
+    path_replacement.py         # bulk ROM path replacement operation
   reports/
     audit_reports.py            # audit report writers
     dedupe_reports.py           # dedupe report writers
+    path_replacement_reports.py # path replacement report writers
   gui/
     app.py                      # Tkinter GUI
     translations.py             # RU/EN UI strings
@@ -83,6 +85,8 @@ Relative `output_dir` values are resolved from `launchbox_root`.
 - Main game paths are stored in `<Game><ApplicationPath>`.
 - Additional application paths are stored in `<AdditionalApplication><ApplicationPath>`.
 - Additional applications are associated with games by `GameID`.
+
+Path replacement edits the three path-bearing fields above: platform `Folder`, main game `ApplicationPath`, and additional application `ApplicationPath`. Absolute database values stay absolute; relative values are rewritten relative to the LaunchBox root.
 
 For Additional Apps dedupe, duplicates are records where both values match:
 
@@ -145,6 +149,13 @@ Dedupe reports:
 ```text
 duplicate_additional_apps.csv
 <PlatformName>/duplicate_additional_apps.txt
+```
+
+Path replacement reports:
+
+```text
+path_replacements.csv
+<PlatformName>/path_replacements.txt
 ```
 
 The `--only-with-findings` mode should avoid creating detail files for clean platforms and remove stale generated detail files where appropriate.

@@ -14,6 +14,7 @@ This project is a set of Python scripts that extend LaunchBox's built-in functio
 
 - **Database vs. folder discrepancy audit** — compare LaunchBox databases with files on disk: missing files, extra files in the ROM folder, platform warnings.
 - **Additional application deduplication** — LaunchBox used to duplicate additional applications when merging games, and it may still do so. The script lets you bulk-clean such duplicates. To avoid rash actions, an analysis mode is provided that generates per-platform reports.
+- **ROM path replacement** — bulk-replace old ROM path prefixes after moving files. Absolute database paths stay absolute; relative database paths are rewritten relative to the LaunchBox folder.
 
 
 
@@ -120,7 +121,7 @@ python launchbox_utils.py --config "D:\Configs\launchbox_utils.ini" gui
 ### Folders and language
 
 - The **LaunchBox folder** and **Output folder** fields are read from `launchbox_utils.ini`.
-- Folders can be edited manually, selected via the folder icon button, or opened in Explorer with the `↗` button.
+- Folders can be edited manually, selected via the `...` button, or opened in Explorer with the `↗` button.
 - Path changes are automatically saved to `launchbox_utils.ini` (section `[paths]`).
 - The interface language is switched with the `RU` and `EN` buttons and saved in `[interface] language`.
 
@@ -291,6 +292,43 @@ Dry-run and audit do not perform these checks — they only read the database.
 
 Review dry-run reports before apply.
 
+## ROM path replacement
+
+Use this after moving ROM files from one absolute path to another. The old path does not need to exist. The operation updates `<Game><ApplicationPath>`, `<AdditionalApplication><ApplicationPath>`, and platform ROM folders in `Data/Platforms.xml`.
+
+The match is path-prefix based with a real path boundary, so `D:\ROM` does not match `D:\ROMs`. If the original database value was absolute, the replacement is written as an absolute path. If it was relative, the replacement is written relative to the LaunchBox root.
+
+Dry-run:
+
+```powershell
+python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms"
+```
+
+Apply:
+
+```powershell
+python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --apply
+```
+
+Single platform and finding-only reports are also supported:
+
+```powershell
+python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --platform "Watara Supervision"
+python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --only-with-findings
+```
+
+Before apply, the same LaunchBox process and XML lock checks are performed as for deduplication. Backups are created in `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>`, then XML is written through the safe temp-file path.
+
+Reports:
+
+```text
+<output_dir>\path_replacements.csv
+<output_dir>\<PlatformName>\path_replacements.txt
+```
+
+- `path_replacements.csv` — summary table with old/new values, entry type, XML path, mode, backup path, errors, and warnings.
+- `path_replacements.txt` — per-platform details for every planned or applied replacement.
+
 ## Main CLI commands
 
 ```powershell
@@ -317,6 +355,12 @@ python launchbox_utils.py dedupe-additional-apps --apply
 
 # Remove duplicates for a single platform
 python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision" --apply
+
+# Path replacement dry-run
+python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms"
+
+# Apply path replacements
+python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --apply
 ```
 
 
@@ -359,6 +403,7 @@ This project is distributed under the [MIT](LICENSE) license.
 
 - **Аудит расхождений между базами и папками** — сравнение баз LaunchBox с файлами на диске: отсутствующие файлы, лишние файлы в ROM-папке, предупреждения по платформам.
 - **Дедупликация дополнительных приложений** — раньше Launchbox очень любил при объединении игр дублировать дополнительные приложения, а может и сейчас любит. Скрипт позволяет массово очистить такие дубли. Чтобы не рубить сплеча, предусмотрен режим анализа, в котором формируются отчеты по платформам.
+- **Массовая замена путей ROM** — обновление старых префиксов путей после переноса файлов. Абсолютные пути остаются абсолютными, относительные пересчитываются от папки LaunchBox.
 
 
 
@@ -465,7 +510,7 @@ python launchbox_utils.py --config "D:\Configs\launchbox_utils.ini" gui
 ### Папки и язык
 
 - Поля **LaunchBox folder** и **Output folder** читаются из `launchbox_utils.ini`.
-- Папки можно редактировать вручную, выбрать через кнопку с иконкой папки или открыть в проводнике кнопкой `↗`.
+- Папки можно редактировать вручную, выбрать через кнопку `...` или открыть в проводнике кнопкой `↗`.
 - Изменения путей автоматически сохраняются в `launchbox_utils.ini` (секция `[paths]`).
 - Язык интерфейса переключается кнопками `RU` и `EN` и сохраняется в `[interface] language`.
 

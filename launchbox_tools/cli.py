@@ -9,8 +9,10 @@ from .config import ConfigError, DEFAULT_CONFIG_PATH, load_app_config, resolve_c
 from .runtime_checks import MutationBlockedError
 from .operations.audit import run_audit
 from .operations.dedupe_additional_apps import run_additional_apps_dedupe
+from .operations.path_replacement import run_path_replacement
 from .reports.audit_reports import write_reports
 from .reports.dedupe_reports import write_dedupe_reports
+from .reports.path_replacement_reports import write_path_replacement_reports
 
 
 def _executable_stem() -> str:
@@ -83,6 +85,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write duplicate reports only for platforms with duplicates or warnings.",
     )
+
+    replace_parser = subparsers.add_parser("replace-paths", help="Replace ROM paths in LaunchBox XML databases.")
+    replace_parser.add_argument("--old", required=True, help="Old absolute path prefix to replace.")
+    replace_parser.add_argument("--new", required=True, help="New absolute path prefix to write.")
+    replace_parser.add_argument("--apply", action="store_true", help="Modify XML files. Without this flag, only reports are written.")
+    replace_parser.add_argument("--platform", help="Limit replacement to one platform name.")
+    replace_parser.add_argument(
+        "--only-with-findings",
+        action="store_true",
+        help="Write replacement reports only for platforms with replacements or warnings.",
+    )
     return parser
 
 
@@ -115,6 +128,13 @@ def main(argv: list[str] | None = None) -> int:
         elif command == "dedupe-additional-apps":
             results = run_additional_apps_dedupe(root, args.platform, args.apply)
             write_dedupe_reports(results, output_dir, args.apply, only_with_findings)
+        elif command == "replace-paths":
+            old_path = Path(args.old).expanduser()
+            new_path = Path(args.new).expanduser()
+            if not old_path.is_absolute() or not new_path.is_absolute():
+                parser.error("replace-paths requires absolute --old and --new paths")
+            results = run_path_replacement(root, old_path, new_path, args.platform, args.apply)
+            write_path_replacement_reports(results, output_dir, args.apply, only_with_findings)
         else:
             parser.error(f"Unknown command: {command}")
     except FileNotFoundError as exc:
@@ -142,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Missing on disk: {missing_count}")
         print(f"Files not in database: {extra_count}")
         print(f"Warnings: {warning_count}")
-    else:
+    elif command == "dedupe-additional-apps":
         duplicate_count = sum(len(result.duplicates) for result in results)
         changed_count = sum(1 for result in results if result.applied)
         warning_count = sum(len(result.warnings) for result in results)
@@ -158,8 +178,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Failed platforms: {len(failed_results)}", file=sys.stderr)
             for result in failed_results:
                 print(f"  {result.platform.name}: {result.error}", file=sys.stderr)
+    else:
+        replacement_count = sum(len(result.replacements) for result in results)
+        changed_count = len({path for result in results for path in result.backup_paths})
+        warning_count = sum(len(result.warnings) for result in results)
+        failed_results = [result for result in results if result.error]
+        mode = "apply" if args.apply else "dry-run"
+
+        print(f"Path replacement mode: {mode}")
+        print(f"Processed platforms: {len(results)}")
+        print(f"Path replacements: {replacement_count}")
+        print(f"Changed XML files/platforms: {changed_count}")
+        print(f"Warnings: {warning_count}")
+        if failed_results:
+            print(f"Failed platforms: {len(failed_results)}", file=sys.stderr)
+            for result in failed_results:
+                print(f"  {result.platform.name}: {result.error}", file=sys.stderr)
     print(f"Reports written to: {output_dir}")
-    if command == "dedupe-additional-apps" and any(result.error for result in results):
+    if command in {"dedupe-additional-apps", "replace-paths"} and any(result.error for result in results):
         return _finish(1)
     return _finish(0)
 

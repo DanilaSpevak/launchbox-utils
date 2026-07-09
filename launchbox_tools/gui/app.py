@@ -18,10 +18,12 @@ from ..config import (
 )
 from ..operations.audit import run_audit
 from ..operations.dedupe_additional_apps import run_additional_apps_dedupe
+from ..operations.path_replacement import run_path_replacement
 from ..runtime_checks import MutationBlockedError, ensure_safe_to_mutate
 from ..xml_repository import load_platforms
 from ..reports.audit_reports import write_reports
 from ..reports.dedupe_reports import write_dedupe_reports
+from ..reports.path_replacement_reports import write_path_replacement_reports
 from .translations import translate
 
 
@@ -81,6 +83,8 @@ class LaunchBoxUtilsApp:
         raw_config = load_raw_path_config(config_path)
         self.launchbox_root_var = tk.StringVar(value=raw_config.launchbox_root)
         self.output_dir_var = tk.StringVar(value=raw_config.output_dir)
+        self.replace_old_path_var = tk.StringVar()
+        self.replace_new_path_var = tk.StringVar()
         output_mode = "findings" if load_configured_only_with_findings(config_path) else "full"
         self.audit_output_mode_var = tk.StringVar(value=output_mode)
 
@@ -123,7 +127,7 @@ class LaunchBoxUtilsApp:
         launchbox_entry.bind("<Return>", self.save_config_from_event)
         launchbox_button = ttk.Button(paths_frame, command=self.browse_launchbox_folder)
         launchbox_button.grid(row=0, column=2)
-        launchbox_button.configure(text="📁", width=3)
+        launchbox_button.configure(text="...", width=3)
         self.add_tooltip(launchbox_button, "browse_launchbox_tooltip")
         launchbox_open_button = ttk.Button(paths_frame, text="↗", width=3, command=lambda: self.open_folder(self.launchbox_root_var.get()))
         launchbox_open_button.grid(row=0, column=3, padx=(5, 0))
@@ -138,7 +142,7 @@ class LaunchBoxUtilsApp:
         output_entry.bind("<Return>", self.save_config_from_event)
         output_button = ttk.Button(paths_frame, command=self.browse_output_folder)
         output_button.grid(row=1, column=2, pady=(8, 0))
-        output_button.configure(text="📁", width=3)
+        output_button.configure(text="...", width=3)
         self.add_tooltip(output_button, "browse_output_tooltip")
         output_open_button = ttk.Button(paths_frame, text="↗", width=3, command=self.open_output_folder)
         output_open_button.grid(row=1, column=3, padx=(5, 0), pady=(8, 0))
@@ -178,15 +182,43 @@ class LaunchBoxUtilsApp:
 
         edit_frame = ttk.LabelFrame(tools_frame, padding=10)
         edit_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        edit_frame.columnconfigure(0, weight=1)
+        edit_frame.columnconfigure(1, weight=1)
         self.translatable_widgets["edit_group"] = edit_frame
 
         apply_button = ttk.Button(edit_frame, command=lambda: self.run_dedupe_operation(True))
-        apply_button.grid(row=0, column=0, sticky="ew")
+        apply_button.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.translatable_widgets["dedupe_apply"] = apply_button
         self.add_tooltip(apply_button, "dedupe_apply_tooltip")
 
-        self.root.minsize(700, 420)
+        replace_old_label = ttk.Label(edit_frame)
+        replace_old_label.grid(row=1, column=0, sticky="w", pady=(10, 0))
+        self.translatable_widgets["replace_old_path"] = replace_old_label
+        replace_old_entry = ttk.Entry(edit_frame, textvariable=self.replace_old_path_var)
+        replace_old_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=(10, 0))
+        replace_old_button = ttk.Button(edit_frame, text="...", width=3, command=lambda: self.browse_replacement_path(self.replace_old_path_var))
+        replace_old_button.grid(row=1, column=2, pady=(10, 0))
+        self.add_tooltip(replace_old_button, "browse_replace_old_tooltip")
+
+        replace_new_label = ttk.Label(edit_frame)
+        replace_new_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.translatable_widgets["replace_new_path"] = replace_new_label
+        replace_new_entry = ttk.Entry(edit_frame, textvariable=self.replace_new_path_var)
+        replace_new_entry.grid(row=2, column=1, sticky="ew", padx=5, pady=(8, 0))
+        replace_new_button = ttk.Button(edit_frame, text="...", width=3, command=lambda: self.browse_replacement_path(self.replace_new_path_var))
+        replace_new_button.grid(row=2, column=2, pady=(8, 0))
+        self.add_tooltip(replace_new_button, "browse_replace_new_tooltip")
+
+        replace_dry_run_button = ttk.Button(edit_frame, command=lambda: self.run_path_replacement_operation(False))
+        replace_dry_run_button.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.translatable_widgets["replace_paths_dry_run"] = replace_dry_run_button
+        self.add_tooltip(replace_dry_run_button, "replace_paths_dry_run_tooltip")
+
+        replace_apply_button = ttk.Button(edit_frame, command=lambda: self.run_path_replacement_operation(True))
+        replace_apply_button.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.translatable_widgets["replace_paths_apply"] = replace_apply_button
+        self.add_tooltip(replace_apply_button, "replace_paths_apply_tooltip")
+
+        self.root.minsize(820, 500)
 
         logs_frame = ttk.LabelFrame(self.root, padding=10)
         logs_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=(0, 10))
@@ -216,6 +248,10 @@ class LaunchBoxUtilsApp:
             "dedupe_dry_run": "dedupe_dry_run",
             "edit_group": "edit_group",
             "dedupe_apply": "dedupe_apply",
+            "replace_old_path": "replace_old_path",
+            "replace_new_path": "replace_new_path",
+            "replace_paths_dry_run": "replace_paths_dry_run",
+            "replace_paths_apply": "replace_paths_apply",
             "logs": "logs",
             "clear_logs": "clear_logs",
         }
@@ -252,6 +288,11 @@ class LaunchBoxUtilsApp:
         if selected:
             self.output_dir_var.set(selected)
             self.save_config()
+
+    def browse_replacement_path(self, variable: tk.StringVar) -> None:
+        selected = filedialog.askdirectory(title=self.t("select_replacement_folder"), initialdir=variable.get() or None)
+        if selected:
+            variable.set(selected)
 
     def save_config_from_event(self, _event: tk.Event) -> None:
         self.save_config(log=True)
@@ -395,6 +436,64 @@ class LaunchBoxUtilsApp:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
 
         message = self.t("starting_dedupe_apply") if apply_changes else self.t("starting_dedupe_dry_run")
+        self.start_worker(message, worker)
+
+    def validate_replacement_paths(self) -> tuple[Path, Path] | None:
+        old_value = self.replace_old_path_var.get().strip()
+        new_value = self.replace_new_path_var.get().strip()
+        if not old_value or not new_value:
+            messagebox.showerror(self.t("failed"), self.t("missing_replacement_paths"))
+            return None
+
+        old_path = Path(old_value).expanduser()
+        new_path = Path(new_value).expanduser()
+        if not old_path.is_absolute() or not new_path.is_absolute():
+            messagebox.showerror(self.t("failed"), self.t("replacement_paths_must_be_absolute"))
+            return None
+        return old_path, new_path
+
+    def run_path_replacement_operation(self, apply_changes: bool) -> None:
+        paths = self.validate_paths()
+        replacement_paths = self.validate_replacement_paths()
+        if paths is None or replacement_paths is None:
+            return
+
+        launchbox_root, output_dir = paths
+        old_path, new_path = replacement_paths
+        if apply_changes:
+            try:
+                platforms = load_platforms(launchbox_root)
+                xml_paths = [launchbox_root / "Data" / "Platforms.xml"]
+                xml_paths.extend(platform.database_xml for platform in platforms if platform.database_xml.exists())
+                ensure_safe_to_mutate(xml_paths)
+            except MutationBlockedError as exc:
+                self.show_mutation_blocked_error(exc)
+                return
+
+        if apply_changes and not messagebox.askyesno(self.t("confirm_apply_title"), self.t("confirm_apply_message")):
+            return
+        only_with_findings = self.audit_output_mode_var.get() == "findings"
+
+        def worker() -> None:
+            try:
+                results = run_path_replacement(launchbox_root, old_path, new_path, apply_changes=apply_changes)
+                write_path_replacement_reports(results, output_dir, apply_changes, only_with_findings)
+                self.enqueue_log(f"{self.t('path_replacement_mode')}: {'apply' if apply_changes else 'dry-run'}")
+                self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
+                self.enqueue_log(f"{self.t('path_replacements')}: {sum(len(result.replacements) for result in results)}")
+                self.enqueue_log(f"{self.t('changed_files')}: {len({path for result in results for path in result.backup_paths})}")
+                self.enqueue_log(f"{self.t('warnings')}: {sum(len(result.warnings) for result in results)}")
+                failed_results = [result for result in results if result.error]
+                if failed_results:
+                    self.enqueue_log(f"{self.t('failed_platforms')}: {len(failed_results)}")
+                    for result in failed_results:
+                        self.enqueue_log(f"  {result.platform.name}: {result.error}")
+                self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
+                self.enqueue_log(self.t("finished"))
+            except Exception:
+                self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
+
+        message = self.t("starting_replace_paths_apply") if apply_changes else self.t("starting_replace_paths_dry_run")
         self.start_worker(message, worker)
 
     def enqueue_log(self, message: str) -> None:

@@ -50,3 +50,25 @@ class AdditionalAppsDedupeResult:
     backup_path: Path | None = None
     applied: bool = False
     error: str | None = None
+
+
+@dataclass
+class PathReplacement:
+    platform: PlatformInfo
+    xml_path: Path
+    entry_type: str
+    title: str
+    old_value: str
+    new_value: str
+    applied: bool = False
+    error: str | None = None
+
+
+@dataclass
+class PathReplacementResult:
+    platform: PlatformInfo
+    replacements: list[PathReplacement] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    backup_paths: list[Path] = field(default_factory=list)
+    applied: bool = False
+    error: str | None = None
