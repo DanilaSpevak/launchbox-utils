@@ -377,6 +377,12 @@ python -m unittest discover -s test -p "test_*.py" -v
 
 Tests use a temporary mock LaunchBox structure and do not modify a real database.
 
+## Text encoding
+
+Markdown sources, the roadmap, and user-facing GUI/CLI/documentation text are stored as UTF-8. Edit and commit these files as UTF-8.
+
+CSV reports are the exception: they are written as UTF-8 with BOM for better Excel compatibility, as noted in the report descriptions above.
+
 ## License
 
 This project is distributed under the [MIT](LICENSE) license.
@@ -722,6 +728,12 @@ python -m unittest discover -s test -p "test_*.py" -v
 ```
 
 Тесты используют временную фиктивную структуру LaunchBox и не меняют реальную базу.
+
+## Кодировка текстов
+
+Markdown-файлы, roadmap и пользовательские тексты GUI/CLI/документации хранятся в UTF-8. Редактируйте и коммитьте эти файлы как UTF-8.
+
+CSV-отчёты являются исключением: они записываются как UTF-8 с BOM для лучшей совместимости с Excel, как указано в описании отчётов выше.
 
 ## License
 
