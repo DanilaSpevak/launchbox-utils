@@ -47,10 +47,10 @@ def _format_path_like_source(source_value: str, new_resolved_path: Path, root: P
     use_forward_slashes = "/" in source_value
 
     if Path(source_value).is_absolute():
-        output_path = str(new_resolved_path.resolve(strict=False))
+        output_path = str(new_resolved_path)
     else:
         try:
-            output_path = os.path.relpath(new_resolved_path.resolve(strict=False), root.resolve(strict=False))
+            output_path = os.path.relpath(new_resolved_path, root)
         except ValueError as exc:
             return None, f"Could not write relative path for {source_value}: {exc}"
 
@@ -66,8 +66,8 @@ def build_replacement_value(root: Path, old_path: Path, new_path: Path, source_v
         return None, None
 
     suffix = _relative_suffix(resolved_source, old_resolved)
-    new_resolved = new_path.resolve(strict=False) if str(suffix) == "." else (new_path / suffix).resolve(strict=False)
-    return _format_path_like_source(source_value, new_resolved, root)
+    new_value_path = new_path if str(suffix) == "." else new_path / suffix
+    return _format_path_like_source(source_value, new_value_path, root)
 
 
 def _append_replacement(

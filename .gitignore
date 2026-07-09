@@ -7,6 +7,7 @@ venv/
 *.egg-info/
 
 backups/
+.tmp/
 tmp_verify*/
 
 AuditReports/
