@@ -137,6 +137,9 @@ class LaunchBoxUtilsApp:
             GuiOperation("export_favorites", "operation_export_favorites", "category_export", "export_favorites_description", self.build_export_favorites_panel, planned=True),
         ]
 
+    def visible_operations(self) -> list[GuiOperation]:
+        return [operation for operation in self.operations if not operation.planned]
+
     def build_form(self) -> None:
         self.root.title(self.t("app_title"))
         self.root.columnconfigure(0, weight=1)
@@ -208,7 +211,7 @@ class LaunchBoxUtilsApp:
 
         row = 0
         previous_category = ""
-        for operation in self.operations:
+        for operation in self.visible_operations():
             if operation.category_key != previous_category:
                 category_label = ttk.Label(nav_frame)
                 category_label.grid(row=row, column=0, sticky="w", pady=(8 if row else 0, 4))
@@ -335,11 +338,12 @@ class LaunchBoxUtilsApp:
     def update_navigation_width(self) -> None:
         if self.nav_frame is None or not self.nav_frame.winfo_exists():
             return
-        if not self.operations:
+        visible_operations = self.visible_operations()
+        if not visible_operations:
             return
 
         text_font = tkfont.nametofont("TkDefaultFont")
-        widest_label = max(text_font.measure(self.t(operation.title_key)) for operation in self.operations)
+        widest_label = max(text_font.measure(self.t(operation.title_key)) for operation in visible_operations)
         self.nav_frame.configure(width=max(220, widest_label + 64))
 
     def show_operation(self, operation_key: str) -> None:
@@ -360,10 +364,11 @@ class LaunchBoxUtilsApp:
         self.apply_language()
 
     def get_operation(self, operation_key: str) -> GuiOperation:
-        for operation in self.operations:
+        visible_operations = self.visible_operations()
+        for operation in visible_operations:
             if operation.key == operation_key:
                 return operation
-        return self.operations[0]
+        return visible_operations[0]
 
     def build_report_mode_controls(self, parent: ttk.Frame, row: int = 0) -> int:
         frame = ttk.LabelFrame(parent, padding=8)
@@ -564,7 +569,7 @@ class LaunchBoxUtilsApp:
             "export_main_file_only": "export_main_file_only",
             "export_all_files": "export_all_files",
         }
-        for operation in self.operations:
+        for operation in self.visible_operations():
             text_map[f"category_{operation.key}"] = operation.category_key
             text_map[f"nav_{operation.key}"] = operation.title_key
             text_map[f"output_mode_{operation.key}"] = "output_mode"
