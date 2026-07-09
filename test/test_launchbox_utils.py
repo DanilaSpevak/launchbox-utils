@@ -336,6 +336,38 @@ language = fr
         self.assertIn("LaunchBox", translate("ru", "mutation_blocked_launchbox"))
         self.assertEqual(translate("missing", "audit_group"), "Audit")
 
+    def test_gui_language_button_toggles_and_saves_language(self) -> None:
+        import tkinter as tk
+
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        root = None
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk is not available: {exc}")
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                config_path = Path(temp_dir) / "launchbox_utils.ini"
+                save_interface_language(config_path, "ru")
+
+                app = LaunchBoxUtilsApp(root, config_path)
+                root.update_idletasks()
+
+                self.assertIsNotNone(app.language_button)
+                self.assertEqual(app.language_button.cget("text"), "RU")
+
+                app.language_button.invoke()
+                root.update_idletasks()
+
+                self.assertEqual(app.language, "en")
+                self.assertEqual(app.language_button.cget("text"), "EN")
+                self.assertEqual(load_configured_language(config_path), "en")
+        finally:
+            if root is not None:
+                root.destroy()
+
     def test_cli_parser_supports_gui_command(self) -> None:
         args = build_arg_parser().parse_args(["gui"])
         self.assertEqual(args.command, "gui")

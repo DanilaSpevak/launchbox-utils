@@ -104,6 +104,7 @@ class LaunchBoxUtilsApp:
         self.logs_text: scrolledtext.ScrolledText | None = None
         self.logs_toggle_button: ttk.Button | None = None
         self.clear_logs_button: ttk.Button | None = None
+        self.language_button: ttk.Button | None = None
         self.logs_collapsed = False
 
         raw_config = load_raw_path_config(config_path)
@@ -136,12 +137,10 @@ class LaunchBoxUtilsApp:
         language_frame.grid(row=0, column=0, sticky="ew")
         language_frame.columnconfigure(0, weight=1)
 
-        ru_button = ttk.Button(language_frame, text="RU", width=6, command=lambda: self.set_language("ru"))
-        ru_button.grid(row=0, column=1, padx=(5, 0))
-        self.add_tooltip(ru_button, "interface_language_tooltip")
-        en_button = ttk.Button(language_frame, text="EN", width=6, command=lambda: self.set_language("en"))
-        en_button.grid(row=0, column=2, padx=(5, 0))
-        self.add_tooltip(en_button, "interface_language_tooltip")
+        language_button = ttk.Button(language_frame, width=5, command=self.toggle_language)
+        language_button.grid(row=0, column=1, padx=(5, 0))
+        self.language_button = language_button
+        self.add_tooltip(language_button, "interface_language_tooltip")
 
         paths_frame = ttk.LabelFrame(self.root, padding=10)
         paths_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
@@ -323,12 +322,10 @@ class LaunchBoxUtilsApp:
         output_open_button.grid(row=0, column=7, padx=(5, 16))
         self.add_tooltip(output_open_button, "open_output_tooltip")
 
-        ru_button = ttk.Button(header, text="RU", width=5, command=lambda: self.set_language("ru"))
-        ru_button.grid(row=0, column=8, padx=(5, 0))
-        self.add_tooltip(ru_button, "interface_language_tooltip")
-        en_button = ttk.Button(header, text="EN", width=5, command=lambda: self.set_language("en"))
-        en_button.grid(row=0, column=9, padx=(5, 0))
-        self.add_tooltip(en_button, "interface_language_tooltip")
+        language_button = ttk.Button(header, width=5, command=self.toggle_language)
+        language_button.grid(row=0, column=8, padx=(5, 0))
+        self.language_button = language_button
+        self.add_tooltip(language_button, "interface_language_tooltip")
 
     def build_task_area(self, parent: tk.Widget) -> ttk.Frame:
         task_area = ttk.Frame(parent, padding=(10, 0, 10, 10))
@@ -725,8 +722,13 @@ class LaunchBoxUtilsApp:
             self.operation_title.configure(text=self.t(current_operation.title_key))
         if self.operation_description is not None and self.operation_description.winfo_exists():
             self.operation_description.configure(text=self.t(current_operation.description_key))
+        if self.language_button is not None and self.language_button.winfo_exists():
+            self.language_button.configure(text=self.language.upper())
         self.update_logs_toggle_text()
         self.update_navigation_width()
+
+    def toggle_language(self) -> None:
+        self.set_language("en" if self.language == "ru" else "ru")
 
     def set_language(self, language: str) -> None:
         self.language = language
