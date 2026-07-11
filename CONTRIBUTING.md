@@ -7,6 +7,7 @@ Thank you for your interest in LaunchBox Utils.
 - This project targets **Windows** and **Python 3.10+**.
 - Runtime dependencies are limited to the Python standard library.
 - Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for module boundaries and safety rules before changing XML-mutating code.
+- Review the existing [architecture decision records](docs/decisions/README.md) before proposing significant architectural or product changes.
 
 ## Development Setup
 
@@ -34,7 +35,8 @@ Tests use temporary fake LaunchBox trees and must not modify a real database.
 1. Keep changes focused and match existing style.
 2. Add or update tests for behavior changes.
 3. Update README or ARCHITECTURE when user-facing behavior changes.
-4. Do not commit `launchbox_utils.ini`, report output, or backup folders.
+4. Record significant new architectural or product directions as a `Proposed` ADR; add implementation work to the roadmap only after the decision is `Accepted`.
+5. Do not commit `launchbox_utils.ini`, report output, or backup folders.
 
 ## XML Mutation Rules
 

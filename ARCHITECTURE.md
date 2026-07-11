@@ -11,6 +11,13 @@ This project is a small Python utility suite for auditing and maintaining Launch
 - Reuse the same business logic from CLI and GUI.
 - Avoid external runtime dependencies where practical.
 
+## Architecture Decisions
+
+Proposed and accepted architectural decisions are recorded in
+[`docs/decisions`](docs/decisions/README.md). A proposed decision is not an
+implementation commitment and should be added to the roadmap only after it is
+accepted.
+
 ## High-Level Structure
 
 ```text
