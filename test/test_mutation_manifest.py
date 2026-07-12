@@ -30,7 +30,7 @@ class MutationManifestTests(LaunchBoxTestCase):
             self.assertTrue(all(file.state == MutationState.COMMITTED for file in run_result.files))
             self.assertEqual(run_result.manifest_error, "manifest denied")
             self.assertIsNone(run_result.manifest_path)
-            self.assertFalse(list(root.rglob("manifest.json.tmp")))
+            self.assertFalse(list(root.rglob("*.tmp")))
             self.assertFalse(list(root.rglob("manifest.json")))
 
     def test_manifest_write_failure_without_message_uses_exception_type(self) -> None:
@@ -72,4 +72,4 @@ class MutationManifestTests(LaunchBoxTestCase):
             self.assertEqual(run_result.manifest_error, "manifest replace denied")
             self.assertIsNone(run_result.manifest_path)
             self.assertEqual(manifest_path.read_text(encoding="utf-8"), "previous manifest\n")
-            self.assertFalse((backup_root / "manifest.json.tmp").exists())
+            self.assertFalse(list(backup_root.glob("*.tmp")))

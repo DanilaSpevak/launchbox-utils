@@ -2,13 +2,35 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 from launchbox_tools.models import MutationOutcome, MutationState
-from launchbox_tools.safe_write import XmlMutation, execute_xml_transaction, reserve_unique_backup_root
+from launchbox_tools.safe_write import (
+    XmlMutation,
+    backup_xml_file,
+    execute_xml_transaction,
+    reserve_unique_backup_root,
+    write_xml_tree_safely,
+)
 from launchbox_tools.xml_repository import child_text, parse_xml
 
 from test.support import LaunchBoxTestCase
 
 
 class SafeWriteTests(LaunchBoxTestCase):
+    def test_backup_xml_file_never_overwrites_existing_backup(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "database.xml"
+            source.write_text("<Root><Value>new</Value></Root>", encoding="utf-8")
+            backup_root = root / "Backups"
+            backup_root.mkdir()
+            existing = backup_root / source.name
+            existing.write_text("preserve me", encoding="utf-8")
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with self.assertRaises(FileExistsError):
+                    backup_xml_file(source, backup_root)
+
+            self.assertEqual(existing.read_text(encoding="utf-8"), "preserve me")
+
     def test_reserve_unique_backup_root_rejects_parent_file(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
@@ -17,6 +39,35 @@ class SafeWriteTests(LaunchBoxTestCase):
 
             with self.assertRaisesRegex(NotADirectoryError, "Backup parent is not a directory"):
                 reserve_unique_backup_root(backup_parent, "run")
+
+    def test_reserve_unique_backup_root_never_reuses_existing_directory(self) -> None:
+        with self.make_root() as temp_dir:
+            backup_parent = Path(temp_dir) / "Backups"
+            existing = backup_parent / "run-id"
+            existing.mkdir(parents=True)
+            marker = existing / "marker.txt"
+            marker.write_text("preserve me", encoding="utf-8")
+
+            with self.assertRaises(FileExistsError):
+                reserve_unique_backup_root(backup_parent, "run-id")
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "preserve me")
+
+    def test_write_xml_tree_safely_cleans_unique_temp_after_validation_failure(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+
+            with patch("launchbox_tools.safe_write.ensure_safe_to_mutate"):
+                with patch("launchbox_tools.safe_write.ET.parse", side_effect=ET.ParseError("invalid")):
+                    with self.assertRaises(ET.ParseError):
+                        write_xml_tree_safely(tree, destination)
+
+            self.assertEqual(child_text(parse_xml(destination), "Value"), "old")
+            self.assertFalse(list(root.rglob("*.tmp")))
 
     def test_reserve_unique_backup_root_reraises_non_collision_file_exists_error(self) -> None:
         with self.make_root() as temp_dir:
@@ -189,7 +240,31 @@ class SafeWriteTests(LaunchBoxTestCase):
 
             self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
             self.assertEqual(destination.read_bytes(), original)
-            self.assertFalse(list(root.glob("*.stage.tmp")))
+            self.assertFalse(list(root.rglob("*.tmp")))
+
+    def test_xml_transaction_aborts_before_stage_when_backup_hash_differs(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            original = destination.read_bytes()
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write.sha256_file", side_effect=["source", "backup"]):
+                    transaction = execute_xml_transaction(
+                        [XmlMutation(destination, tree)],
+                        root / "Backups",
+                        "test-run-id",
+                    )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertIn("Backup verification failed", transaction.error)
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertTrue(transaction.files[0].backup_path.is_file())
+            self.assertIsNone(transaction.files[0].source_sha256)
+            self.assertFalse(list(root.rglob("*.tmp")))
 
     def test_xml_transaction_stage_failure_does_not_commit(self) -> None:
         with self.make_root() as temp_dir:
@@ -210,7 +285,7 @@ class SafeWriteTests(LaunchBoxTestCase):
             self.assertEqual(transaction.files[0].state, MutationState.FAILED)
             self.assertEqual(destination.read_bytes(), original)
             self.assertEqual(len(transaction.backup_paths), 1)
-            self.assertFalse(list(root.glob("*.stage.tmp")))
+            self.assertFalse(list(root.rglob("*.tmp")))
 
     def test_xml_transaction_keeps_prepared_state_when_precommit_check_fails(self) -> None:
         with self.make_root() as temp_dir:
@@ -231,7 +306,7 @@ class SafeWriteTests(LaunchBoxTestCase):
             self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
             self.assertEqual(transaction.files[0].state, MutationState.PREPARED)
             self.assertEqual(child_text(parse_xml(destination), "Value"), "old")
-            self.assertFalse(list(root.glob("*.stage.tmp")))
+            self.assertFalse(list(root.rglob("*.tmp")))
 
     def test_xml_transaction_keeps_unattempted_files_prepared_after_late_commit_failure(self) -> None:
         with self.make_root() as temp_dir:
@@ -264,3 +339,4 @@ class SafeWriteTests(LaunchBoxTestCase):
                 [file.state for file in transaction.files],
                 [MutationState.ROLLED_BACK, MutationState.FAILED, MutationState.PREPARED],
             )
+            self.assertFalse(list(root.rglob("*.tmp")))

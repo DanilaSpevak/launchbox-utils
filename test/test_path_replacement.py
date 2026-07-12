@@ -1,5 +1,7 @@
+import hashlib
 import json
 from pathlib import Path
+from uuid import UUID
 from unittest.mock import patch
 from launchbox_tools.operations.path_replacement import build_replacement_value, run_path_replacement
 from launchbox_tools.models import MutationOutcome, MutationState
@@ -86,6 +88,13 @@ class PathReplacementTests(LaunchBoxTestCase):
     <ApplicationPath>Games/NES/extra.zip</ApplicationPath>
   </AdditionalApplication>""",
             )
+            original_hashes = {
+                str(path.resolve(strict=False)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (
+                    root / "Data" / "Platforms.xml",
+                    root / "Data" / "Platforms" / "Nintendo Entertainment System.xml",
+                )
+            }
 
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
                 results = run_path_replacement(root, root / "Games" / "NES", root / "Games" / "SNES", apply_changes=True)
@@ -101,9 +110,18 @@ class PathReplacementTests(LaunchBoxTestCase):
             self.assertTrue(all(file.state == MutationState.COMMITTED for file in results.files))
             self.assertTrue(results.manifest_path.is_file())
             manifest = json.loads(results.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(manifest["run_id"], results.run_id)
+            UUID(results.run_id)
             self.assertEqual(manifest["outcome"], "success")
             self.assertEqual({item["state"] for item in manifest["files"]}, {"committed"})
             self.assertEqual({item["state"] for item in manifest["changes"]}, {"committed"})
+            for item in manifest["files"]:
+                self.assertEqual(item["source_sha256"], original_hashes[item["path"]])
+                self.assertEqual(
+                    hashlib.sha256(Path(item["backup_path"]).read_bytes()).hexdigest(),
+                    item["source_sha256"],
+                )
 
     def test_path_replacement_apply_without_changes_still_writes_manifest(self) -> None:
         with self.make_root() as temp_dir:
@@ -150,8 +168,17 @@ class PathReplacementTests(LaunchBoxTestCase):
                         apply_changes=True,
                     )
 
-            self.assertEqual(first.manifest_path.parent.name, "PathReplacement-20260712-120000")
-            self.assertEqual(second.manifest_path.parent.name, "PathReplacement-20260712-120000-2")
+            self.assertNotEqual(first.run_id, second.run_id)
+            UUID(first.run_id)
+            UUID(second.run_id)
+            self.assertEqual(
+                first.manifest_path.parent.name,
+                f"PathReplacement-20260712-120000-{first.run_id}",
+            )
+            self.assertEqual(
+                second.manifest_path.parent.name,
+                f"PathReplacement-20260712-120000-{second.run_id}",
+            )
             self.assertEqual(first.manifest_path.read_text(encoding="utf-8"), first_manifest)
             self.assertTrue(second.manifest_path.is_file())
 

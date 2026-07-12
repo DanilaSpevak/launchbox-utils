@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 from .models import MutationFileResult, MutationOutcome, MutationState, PlatformInfo
 from .runtime_checks import ensure_safe_to_mutate
@@ -15,7 +17,19 @@ def backup_xml_file(xml_path: Path, backup_root: Path) -> Path:
     ensure_safe_to_mutate([xml_path])
     backup_root.mkdir(parents=True, exist_ok=True)
     backup_path = backup_root / xml_path.name
-    shutil.copy2(xml_path, backup_path)
+    created = False
+    try:
+        with xml_path.open("rb") as source, backup_path.open("xb") as destination:
+            created = True
+            shutil.copyfileobj(source, destination)
+        shutil.copystat(xml_path, backup_path)
+    except Exception:
+        if created:
+            try:
+                backup_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
     return backup_path
 
 
@@ -28,25 +42,31 @@ def reserve_unique_backup_root(backup_parent: Path, name: str) -> Path:
         raise NotADirectoryError(f"Backup parent is not a directory: {backup_parent}")
     backup_parent.mkdir(parents=True, exist_ok=True)
 
-    attempt = 1
-    while True:
-        suffix = "" if attempt == 1 else f"-{attempt}"
-        candidate = backup_parent / f"{name}{suffix}"
-        try:
-            candidate.mkdir(exist_ok=False)
-            return candidate
-        except FileExistsError:
-            if not candidate.exists():
-                raise
-            attempt += 1
+    candidate = backup_parent / name
+    candidate.mkdir(exist_ok=False)
+    return candidate
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def write_xml_tree_safely(tree: ET.ElementTree, destination: Path) -> None:
     ensure_safe_to_mutate([destination])
-    temp_path = destination.with_name(f"{destination.name}.tmp")
-    tree.write(temp_path, encoding="utf-8", xml_declaration=True)
-    ET.parse(temp_path)
-    os.replace(temp_path, destination)
+    temp_path = destination.with_name(f".{destination.name}.{uuid4()}.tmp")
+    try:
+        tree.write(temp_path, encoding="utf-8", xml_declaration=True)
+        ET.parse(temp_path)
+        os.replace(temp_path, destination)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @dataclass(frozen=True)
@@ -74,7 +94,11 @@ def _restore_backup(backup_path: Path, destination: Path, rollback_path: Path) -
     os.replace(rollback_path, destination)
 
 
-def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> XmlTransactionResult:
+def execute_xml_transaction(
+    mutations: list[XmlMutation],
+    backup_root: Path,
+    run_id: str | None = None,
+) -> XmlTransactionResult:
     if not mutations:
         return XmlTransactionResult(outcome=MutationOutcome.SUCCESS)
 
@@ -82,6 +106,7 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
     stage_paths: dict[Path, Path] = {}
     rollback_paths: set[Path] = set()
     committed: list[Path] = []
+    transaction_id = run_id or str(uuid4())
     files = [MutationFileResult(mutation.destination.absolute()) for mutation in mutations]
     files_by_path = {result.path: result for result in files}
 
@@ -116,8 +141,13 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
 
         try:
             for destination in destinations:
+                source_sha256 = sha256_file(destination)
                 backups[destination] = backup_xml_file(destination, backup_roots[destination])
                 files_by_path[destination].backup_path = backups[destination]
+                backup_sha256 = sha256_file(backups[destination])
+                if backup_sha256 != source_sha256:
+                    raise OSError(f"Backup verification failed for {destination}")
+                files_by_path[destination].source_sha256 = source_sha256
         except Exception as exc:
             file_result = files_by_path[destination]
             file_result.state = MutationState.FAILED
@@ -126,7 +156,9 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
 
         try:
             for destination, payload in serialized.items():
-                stage_path = destination.with_name(f"{destination.name}.stage.tmp")
+                stage_path = destination.with_name(
+                    f".{destination.name}.{transaction_id}.stage.tmp"
+                )
                 stage_paths[destination] = stage_path
                 stage_path.write_bytes(payload)
                 ET.parse(stage_path)
@@ -153,7 +185,9 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
             failed_result.error = str(exc)
             rollback_errors: list[str] = []
             for destination in reversed(committed):
-                rollback_path = destination.with_name(f"{destination.name}.rollback.tmp")
+                rollback_path = destination.with_name(
+                    f".{destination.name}.{transaction_id}.rollback.tmp"
+                )
                 rollback_paths.add(rollback_path)
                 try:
                     _restore_backup(backups[destination], destination, rollback_path)

@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from ..models import (
     AdditionalApplicationAmbiguity,
@@ -16,6 +17,7 @@ from ..models import (
     MutationState,
     PlatformInfo,
 )
+from ..mutation_lock import mutation_run_lock
 from ..mutation_manifest import write_mutation_manifest
 from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
@@ -176,6 +178,7 @@ def dedupe_additional_apps_for_platform(
     root: Path,
     apply_changes: bool,
     backup_root: Path,
+    run_id: str | None = None,
 ) -> tuple[AdditionalAppsDedupeResult, MutationOutcome, list[str], list[MutationFileResult]]:
     result = AdditionalAppsDedupeResult(platform=platform)
     if not platform.database_xml.exists():
@@ -228,7 +231,11 @@ def dedupe_additional_apps_for_platform(
     for duplicate in removable_duplicates:
         duplicate.duplicate.parent.remove(duplicate.duplicate.element)
 
-    transaction = execute_xml_transaction([XmlMutation(platform.database_xml, tree)], backup_root)
+    transaction = execute_xml_transaction(
+        [XmlMutation(platform.database_xml, tree)],
+        backup_root,
+        run_id,
+    )
     result.backup_path = transaction.backup_paths.get(platform.database_xml.resolve(strict=False))
     result.error = transaction.error
     if transaction.files:
@@ -248,6 +255,30 @@ def run_additional_apps_dedupe(
     platform_filter: str | None = None,
     apply_changes: bool = False,
 ) -> MutationRunResult[AdditionalAppsDedupeResult]:
+    resolved_root = root.resolve(strict=False)
+    if not apply_changes:
+        return _run_additional_apps_dedupe(
+            resolved_root,
+            platform_filter,
+            apply_changes=False,
+        )
+
+    run_id = str(uuid4())
+    with mutation_run_lock(resolved_root, "dedupe_additional_apps", run_id):
+        return _run_additional_apps_dedupe(
+            resolved_root,
+            platform_filter,
+            apply_changes=True,
+            run_id=run_id,
+        )
+
+
+def _run_additional_apps_dedupe(
+    root: Path,
+    platform_filter: str | None = None,
+    apply_changes: bool = False,
+    run_id: str | None = None,
+) -> MutationRunResult[AdditionalAppsDedupeResult]:
     root = root.resolve(strict=False)
     platforms = load_platforms(root)
     if platform_filter:
@@ -260,6 +291,8 @@ def run_additional_apps_dedupe(
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_parent = root / "Data" / "Backups"
     backup_name = f"AdditionalAppsDedupe-{timestamp}"
+    if run_id is not None:
+        backup_name = f"{backup_name}-{run_id}"
     backup_root = backup_parent / backup_name
     if apply_changes:
         backup_root = reserve_unique_backup_root(backup_parent, backup_name)
@@ -270,7 +303,7 @@ def run_additional_apps_dedupe(
     for platform in platforms:
         try:
             result, outcome, platform_rollback_errors, platform_files = dedupe_additional_apps_for_platform(
-                platform, root, apply_changes, backup_root
+                platform, root, apply_changes, backup_root, run_id
             )
             results.append(result)
             outcomes.append(outcome)
@@ -314,6 +347,7 @@ def run_additional_apps_dedupe(
         " | ".join(errors) or None,
         rollback_errors,
         file_results,
+        run_id=run_id,
     )
     if apply_changes:
         changes = [

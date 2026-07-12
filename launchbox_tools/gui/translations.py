@@ -102,6 +102,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "mutation_blocked_launchbox": "LaunchBox is running. Close LaunchBox before modifying database files.",
         "mutation_blocked_files": "Database file is locked by another process:\n{path}",
         "mutation_blocked_files_many": "Database files are locked by another process:\n{paths}",
+        "mutation_blocked_in_progress": (
+            "Another LaunchBox Utils mutation is already running.\n"
+            "Operation: {operation}\nRun ID: {run_id}\nPID: {pid}\nStarted: {started_at}"
+        ),
         "dedupe_mode": "Dedupe mode",
         "path_replacement_mode": "Path replacement mode",
         "processed_platforms": "Processed platforms",
@@ -215,6 +219,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "mutation_blocked_launchbox": "LaunchBox запущен. Закройте LaunchBox перед изменением файлов базы.",
         "mutation_blocked_files": "Файл базы заблокирован другим процессом:\n{path}",
         "mutation_blocked_files_many": "Файлы базы заблокированы другим процессом:\n{paths}",
+        "mutation_blocked_in_progress": (
+            "Другая мутация LaunchBox Utils уже выполняется.\n"
+            "Операция: {operation}\nRun ID: {run_id}\nPID: {pid}\nНачало: {started_at}"
+        ),
         "dedupe_mode": "Режим дедупликации",
         "path_replacement_mode": "Режим замены путей",
         "processed_platforms": "Обработано платформ",

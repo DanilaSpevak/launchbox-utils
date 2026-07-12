@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .diagnostics import describe_exception
 from .models import MutationRunResult
@@ -15,9 +16,12 @@ def write_mutation_manifest(
     operation: str,
     changes: list[dict[str, object]],
 ) -> None:
+    if run_result.run_id is None:
+        run_result.run_id = str(uuid4())
     manifest_path = backup_root / "manifest.json"
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "run_id": run_result.run_id,
         "operation": operation,
         "mode": "apply",
         "outcome": run_result.outcome.value,
@@ -30,13 +34,14 @@ def write_mutation_manifest(
                 "backup_path": str(file_result.backup_path) if file_result.backup_path else None,
                 "error": file_result.error,
                 "rollback_error": file_result.rollback_error,
+                "source_sha256": file_result.source_sha256,
             }
             for file_result in run_result.files
         ],
         "changes": changes,
     }
     serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    temp_path = manifest_path.with_name(f"{manifest_path.name}.tmp")
+    temp_path = manifest_path.with_name(f".{manifest_path.name}.{run_result.run_id}.tmp")
 
     try:
         backup_root.mkdir(parents=True, exist_ok=True)

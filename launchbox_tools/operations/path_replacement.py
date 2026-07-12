@@ -4,6 +4,7 @@ import os
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from ..models import (
     MutationFileResult,
@@ -14,6 +15,7 @@ from ..models import (
     PathReplacementResult,
     PlatformInfo,
 )
+from ..mutation_lock import mutation_run_lock
 from ..mutation_manifest import write_mutation_manifest
 from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
@@ -217,6 +219,36 @@ def run_path_replacement(
     platform_filter: str | None = None,
     apply_changes: bool = False,
 ) -> MutationRunResult[PathReplacementResult]:
+    resolved_root = root.resolve(strict=False)
+    if not apply_changes:
+        return _run_path_replacement(
+            resolved_root,
+            old_path,
+            new_path,
+            platform_filter,
+            apply_changes=False,
+        )
+
+    run_id = str(uuid4())
+    with mutation_run_lock(resolved_root, "replace_paths", run_id):
+        return _run_path_replacement(
+            resolved_root,
+            old_path,
+            new_path,
+            platform_filter,
+            apply_changes=True,
+            run_id=run_id,
+        )
+
+
+def _run_path_replacement(
+    root: Path,
+    old_path: Path,
+    new_path: Path,
+    platform_filter: str | None = None,
+    apply_changes: bool = False,
+    run_id: str | None = None,
+) -> MutationRunResult[PathReplacementResult]:
     root = root.resolve(strict=False)
     old_path = old_path.expanduser().resolve(strict=False)
     new_path = new_path.expanduser().resolve(strict=False)
@@ -239,6 +271,8 @@ def run_path_replacement(
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_parent = root / "Data" / "Backups"
     backup_name = f"PathReplacement-{timestamp}"
+    if run_id is not None:
+        backup_name = f"{backup_name}-{run_id}"
     backup_root = backup_parent / backup_name
 
     platforms_tree = parse_xml_tree(platforms_xml)
@@ -306,6 +340,7 @@ def run_path_replacement(
             MutationOutcome.FAILED,
             " | ".join(planning_errors),
             files=planned_files,
+            run_id=run_id,
         )
         if apply_changes:
             _write_path_replacement_manifest(run_result, backup_root)
@@ -322,7 +357,7 @@ def run_path_replacement(
         for result, tree, changed in platform_trees
         if changed
     )
-    transaction = execute_xml_transaction(mutations, backup_root)
+    transaction = execute_xml_transaction(mutations, backup_root, run_id)
     transaction_files_by_path = {file_result.path: file_result for file_result in transaction.files}
 
     for result in results:
@@ -343,6 +378,7 @@ def run_path_replacement(
         transaction.error,
         transaction.rollback_errors,
         transaction.files,
+        run_id=run_id,
     )
     _write_path_replacement_manifest(run_result, backup_root)
     return run_result

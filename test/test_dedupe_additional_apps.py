@@ -1,6 +1,7 @@
 import csv
 import json
 from pathlib import Path
+from uuid import UUID
 from unittest.mock import patch
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
 from launchbox_tools.runtime_checks import MutationBlockedError
@@ -114,8 +115,17 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                     first_manifest = first.manifest_path.read_text(encoding="utf-8")
                     second = run_additional_apps_dedupe(root, apply_changes=True)
 
-            self.assertEqual(first.manifest_path.parent.name, "AdditionalAppsDedupe-20260712-120000")
-            self.assertEqual(second.manifest_path.parent.name, "AdditionalAppsDedupe-20260712-120000-2")
+            self.assertNotEqual(first.run_id, second.run_id)
+            UUID(first.run_id)
+            UUID(second.run_id)
+            self.assertEqual(
+                first.manifest_path.parent.name,
+                f"AdditionalAppsDedupe-20260712-120000-{first.run_id}",
+            )
+            self.assertEqual(
+                second.manifest_path.parent.name,
+                f"AdditionalAppsDedupe-20260712-120000-{second.run_id}",
+            )
             self.assertEqual(first.manifest_path.read_text(encoding="utf-8"), first_manifest)
             self.assertTrue(second.manifest_path.is_file())
 

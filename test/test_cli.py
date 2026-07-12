@@ -6,11 +6,32 @@ from unittest.mock import patch
 from launchbox_tools.cli import _resolve_command, build_arg_parser, main
 from launchbox_tools.config import AppConfig
 from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationRunResult, MutationState
+from launchbox_tools.runtime_checks import MutationBlockedError
 
 from test.support import LaunchBoxTestCase
 
 
 class CliTests(LaunchBoxTestCase):
+    def test_cli_reports_busy_mutation_lock_without_traceback(self) -> None:
+        config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
+        error = MutationBlockedError(
+            "Another LaunchBox Utils mutation is already running (operation=replace_paths).",
+            reason="mutation_in_progress",
+            active_operation="replace_paths",
+            active_run_id="active-run",
+            active_pid=123,
+        )
+        stderr = io.StringIO()
+
+        with patch("launchbox_tools.cli.load_app_config", return_value=config):
+            with patch("launchbox_tools.cli.run_additional_apps_dedupe", side_effect=error):
+                with contextlib.redirect_stderr(stderr):
+                    exit_code = main(["dedupe-additional-apps", "--apply"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("operation=replace_paths", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_cli_parser_supports_gui_command(self) -> None:
         args = build_arg_parser().parse_args(["gui"])
         self.assertEqual(args.command, "gui")

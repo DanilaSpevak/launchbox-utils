@@ -4,11 +4,47 @@ from unittest.mock import Mock, patch
 from launchbox_tools.config import load_configured_language, save_interface_language
 from launchbox_tools.gui.translations import translate
 from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationRunResult, MutationState
+from launchbox_tools.runtime_checks import MutationBlockedError
 
 from test.support import LaunchBoxTestCase
 
 
 class GuiTests(LaunchBoxTestCase):
+    def test_gui_worker_logs_busy_mutation_lock_without_traceback(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        messages: list[str] = []
+        app.validate_paths = Mock(return_value=(Path("C:/LaunchBox"), Path("C:/Reports")))
+        app.audit_output_mode_var = Mock()
+        app.audit_output_mode_var.get.return_value = "all"
+        app.enqueue_log = messages.append
+        app.t = lambda key: translate("en", key)
+        app.start_worker = lambda _message, worker: worker()
+        error = MutationBlockedError(
+            "busy",
+            reason="mutation_in_progress",
+            active_operation="replace_paths",
+            active_run_id="active-run",
+            active_pid=123,
+            active_started_at="2026-07-12T12:00:00Z",
+        )
+
+        with patch("launchbox_tools.gui.app.load_platforms", return_value=[]):
+            with patch("launchbox_tools.gui.app.ensure_safe_to_mutate"):
+                with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
+                    with patch(
+                        "launchbox_tools.gui.app.run_additional_apps_dedupe",
+                        side_effect=error,
+                    ):
+                        app.run_dedupe_operation(True)
+
+        joined = "\n".join(messages)
+        self.assertIn("Another LaunchBox Utils mutation is already running", joined)
+        self.assertIn("Operation: replace_paths", joined)
+        self.assertIn("Run ID: active-run", joined)
+        self.assertNotIn("Traceback", joined)
+
     def test_gui_translations_support_russian_and_english(self) -> None:
         self.assertEqual(translate("en", "audit_group"), "Audit")
         self.assertEqual(translate("ru", "audit_group"), "Аудит")

@@ -730,7 +730,7 @@ class LaunchBoxUtilsApp:
 
         self.start_worker(self.t("starting_audit"), worker)
 
-    def show_mutation_blocked_error(self, exc: MutationBlockedError) -> None:
+    def mutation_blocked_message(self, exc: MutationBlockedError) -> str:
         if exc.reason == "launchbox_running":
             message = self.t("mutation_blocked_launchbox")
         elif exc.reason == "files_locked":
@@ -739,9 +739,19 @@ class LaunchBoxUtilsApp:
             else:
                 paths = "\n".join(str(path) for path in exc.locked_files)
                 message = self.t("mutation_blocked_files_many").format(paths=paths)
+        elif exc.reason == "mutation_in_progress":
+            message = self.t("mutation_blocked_in_progress").format(
+                operation=exc.active_operation or "?",
+                run_id=exc.active_run_id or "?",
+                pid=exc.active_pid if exc.active_pid is not None else "?",
+                started_at=exc.active_started_at or "?",
+            )
         else:
             message = str(exc)
-        messagebox.showerror(self.t("mutation_blocked_title"), message)
+        return message
+
+    def show_mutation_blocked_error(self, exc: MutationBlockedError) -> None:
+        messagebox.showerror(self.t("mutation_blocked_title"), self.mutation_blocked_message(exc))
 
     def log_mutation_state_summary(self, run_result: MutationRunResult[object]) -> None:
         for state in MutationState:
@@ -824,6 +834,8 @@ class LaunchBoxUtilsApp:
                     self.enqueue_log(self.t("finished"))
                 elif run_result.outcome.value not in {"dry_run", "success"}:
                     self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))
+            except MutationBlockedError as exc:
+                self.enqueue_log(f"{self.t('failed')}: {self.mutation_blocked_message(exc)}")
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
 
@@ -905,6 +917,8 @@ class LaunchBoxUtilsApp:
                     self.enqueue_log(self.t("finished"))
                 elif run_result.outcome.value not in {"dry_run", "success"}:
                     self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))
+            except MutationBlockedError as exc:
+                self.enqueue_log(f"{self.t('failed')}: {self.mutation_blocked_message(exc)}")
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
 

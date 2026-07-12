@@ -29,6 +29,7 @@ launchbox_tools/
   paths.py                      # path normalization and report folder naming
   xml_repository.py             # LaunchBox XML reading helpers
   runtime_checks.py             # LaunchBox process and XML file lock checks
+  mutation_lock.py              # per-installation interprocess apply lock
   safe_write.py                 # backup and safe XML write helpers
   operations/
     audit.py                    # read-only ROM audit
@@ -51,6 +52,7 @@ launchbox_tools/
 - `reports/*` modules decide how results are written to files.
 - `xml_repository.py` owns LaunchBox XML reading helpers.
 - `runtime_checks.py` owns pre-mutation safety checks for LaunchBox process state and XML file locks.
+- `mutation_lock.py` owns the installation-wide interprocess apply lock.
 - `safe_write.py` owns backup and safe XML replacement behavior.
 - `mutation_manifest.py` writes the final apply manifest independently from user reports.
 - `config.py` owns `launchbox_utils.ini` parsing and saving.
@@ -117,11 +119,13 @@ Any operation that modifies LaunchBox XML must follow these rules:
 - The temporary XML must be parsed successfully before replacing the original file.
 - Only the intended XML elements should be changed.
 
-Multi-file mutations use the shared transaction executor in `safe_write.py`: plan and validate all serialized XML, back up every destination, stage and parse every temporary file, then commit with atomic replacement. Apply runs atomically reserve their timestamped backup root; a same-second collision receives a numeric suffix (`-2`, `-3`, and so on). Each destination in a transaction receives a numbered backup subdirectory (`0001`, `0002`, and so on), so files with the same basename cannot overwrite each other's backups. If a later commit fails, already committed files are restored from backup in reverse order.
+Multi-file mutations use the shared transaction executor in `safe_write.py`: plan and validate all serialized XML, back up every destination, stage and parse every temporary file, then commit with atomic replacement. Every apply run receives a UUID and exclusively creates a backup root named `<Operation>-<timestamp>-<uuid>`. Each destination in a transaction receives a numbered backup subdirectory (`0001`, `0002`, and so on), and backup files are created exclusively, so an existing backup is never replaced. Stage, rollback, and manifest temporary files include the run UUID and are removed in `finally`. If a later commit fails, already committed files are restored from backup in reverse order.
+
+Only one mutation may run for a LaunchBox installation at a time. Apply operations acquire a non-blocking OS lock on `Data/.launchbox-utils-mutation.lock` before reading XML and hold it through safety checks, backup, commit or rollback, manifest writing, and cleanup. The lock metadata records the operation, run UUID, PID, and UTC start time. A competing apply fails immediately with `MutationBlockedError(reason="mutation_in_progress")`; dry-run operations do not acquire this lock. The lock file is retained, while the OS releases the lock automatically when the owning process exits.
 
 `replace-paths` treats all changed XML files as one transaction. Additional Apps dedupe treats each platform XML as an independent transaction, so one failed platform does not undo successful changes to another platform. Mutation runs expose `dry_run`, `success`, `partial`, `failed`, or `rolled_back`.
 
-`MutationState` is the only source of truth for individual files and changes: `planned` before preparation, `prepared` after backup/stage validation, `committed` after atomic replacement, `failed` for a failed file step, and `rolled_back` after successful restoration. A final `manifest.json` in the apply backup root records the run outcome, file states, backup paths, diagnostics, and operation-specific changes. Manifest writer failures are reported separately and never rewrite the known XML mutation state.
+`MutationState` is the only source of truth for individual files and changes: `planned` before preparation, `prepared` after backup/stage validation, `committed` after atomic replacement, `failed` for a failed file step, and `rolled_back` after successful restoration. A schema-version 2 `manifest.json` in the apply backup root records the run UUID, outcome, file states, original paths and SHA-256 hashes, backup paths, diagnostics, and operation-specific changes. Each hash is verified against the exclusive backup before staging begins. Manifest writer failures are reported separately and never rewrite the known XML mutation state.
 
 Use `safe_write.py` for backup and safe replacement rather than writing XML directly.
 
@@ -129,7 +133,7 @@ Use `safe_write.py` for backup and safe replacement rather than writing XML dire
 
 `runtime_checks.py` enforces the rule that LaunchBox must not be running and database XML must not be locked before apply.
 
-Checks run in two layers:
+Checks run after the apply operation has acquired the installation-wide mutation lock and then continue in two layers:
 
 1. **Operation orchestrator** — `run_additional_apps_dedupe(..., apply_changes=True)` calls `ensure_safe_to_mutate()` once before processing platforms.
 2. **Write layer** — the transaction executor calls `ensure_safe_to_mutate()` before backup and again immediately before commit. This protects future callers that bypass the orchestrator.
@@ -144,7 +148,7 @@ Read-only operations (`audit`, dedupe dry-run) do not call these checks.
 Entry points surface the error consistently:
 
 - **CLI** — catches `MutationBlockedError`, prints to stderr, exits with code 1.
-- **GUI** — runs the check before the apply confirmation dialog and shows a localized error dialog.
+- **GUI** — runs the check before the apply confirmation dialog; a lock race detected later by the worker is logged as a localized error without a traceback.
 
 New write operations should call `ensure_safe_to_mutate()` at the orchestrator level and rely on `safe_write.py` for defense in depth.
 

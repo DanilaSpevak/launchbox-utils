@@ -12,10 +12,18 @@ class MutationBlockedError(RuntimeError):
         *,
         reason: str,
         locked_files: list[Path] | None = None,
+        active_operation: str | None = None,
+        active_run_id: str | None = None,
+        active_pid: int | None = None,
+        active_started_at: str | None = None,
     ) -> None:
         super().__init__(message)
         self.reason = reason
         self.locked_files = locked_files or []
+        self.active_operation = active_operation
+        self.active_run_id = active_run_id
+        self.active_pid = active_pid
+        self.active_started_at = active_started_at
 
 
 LAUNCHBOX_PROCESS_NAMES = (

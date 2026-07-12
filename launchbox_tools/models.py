@@ -30,6 +30,7 @@ class MutationFileResult:
     backup_path: Path | None = None
     error: str | None = None
     rollback_error: str | None = None
+    source_sha256: str | None = None
 
 
 T = TypeVar("T")
@@ -44,6 +45,7 @@ class MutationRunResult(Generic[T]):
     files: list[MutationFileResult] = field(default_factory=list)
     manifest_path: Path | None = None
     manifest_error: str | None = None
+    run_id: str | None = None
 
 
 @dataclass(frozen=True)
