@@ -275,7 +275,7 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 
 On successful `--apply`, the utility:
 
-- creates XML backups in numbered subdirectories under `<LaunchBox>\Data\Backups\AdditionalAppsDedupe-<timestamp>`;
+- creates XML backups in numbered subdirectories under `<LaunchBox>\Data\Backups\AdditionalAppsDedupe-<timestamp>[-N]`;
 - removes only duplicate `<AdditionalApplication>` entries;
 - does not remove `<Game>` entries;
 - writes XML to a temporary file, validates parsing, and only then replaces the original.
@@ -284,7 +284,7 @@ Each platform XML is committed independently. If some files are committed and an
 
 Every planned XML change has an explicit state: `planned` in dry-run, `prepared` after backup and staged XML validation, `committed` only after atomic replacement, `failed` when a step for that file fails, and `rolled_back` after a committed file is restored. `applied` is not emitted as a separate flag.
 
-Each apply run writes a final `manifest.json` under its timestamped backup directory. It records the overall outcome, every affected XML file, backup paths, errors, and the state of each duplicate removal. If the XML commit succeeds but the manifest cannot be written, the mutation remains `success`, the manifest error is reported separately, and CLI exits with code 1.
+Each apply run atomically reserves its timestamped backup directory. Same-second collisions receive `-2`, `-3`, and later numeric suffixes. A final `manifest.json` records the overall outcome, every affected XML file, backup paths, errors, and the state of each duplicate removal. If the XML commit succeeds but the manifest cannot be written, the mutation remains `success`, the manifest error is reported separately, and CLI exits with code 1.
 
 Dry-run and audit do not perform these checks — they only read the database.
 
@@ -325,9 +325,9 @@ python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --
 python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --only-with-findings
 ```
 
-Before apply, the same LaunchBox process and XML lock checks are performed as for deduplication. All affected XML files form one transaction: every document is validated, backed up, and staged before commit. Each XML backup is stored in its own numbered subdirectory under `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>`. If a later replacement fails, already replaced files are restored from the matching backup and the operation reports `rolled_back`; restored replacements have state `rolled_back`, the failing file has state `failed`, and files not yet committed remain `prepared`.
+Before apply, the same LaunchBox process and XML lock checks are performed as for deduplication. All affected XML files form one transaction: every document is validated, backed up, and staged before commit. Each XML backup is stored in its own numbered subdirectory under `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>[-N]`. If a later replacement fails, already replaced files are restored from the matching backup and the operation reports `rolled_back`; restored replacements have state `rolled_back`, the failing file has state `failed`, and files not yet committed remain `prepared`.
 
-Apply also writes `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>\manifest.json`, including runs that find no changes.
+Apply also writes `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>[-N]\manifest.json`, including runs that find no changes.
 
 Reports:
 
@@ -680,7 +680,7 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 
 При успешном `--apply` утилита:
 
-- создаёт резервные копии XML в нумерованных подкаталогах `<LaunchBox>\Data\Backups\AdditionalAppsDedupe-<timestamp>`;
+- создаёт резервные копии XML в нумерованных подкаталогах `<LaunchBox>\Data\Backups\AdditionalAppsDedupe-<timestamp>[-N]`;
 - удаляет только дублирующие `<AdditionalApplication>`;
 - не удаляет `<Game>`;
 - записывает XML во временный файл, проверяет парсинг и только после этого заменяет оригинал.
@@ -689,7 +689,7 @@ XML каждой платформы фиксируется независимо.
 
 Каждое изменение XML имеет явное состояние: `planned` в dry-run, `prepared` после создания backup и проверки staged XML, `committed` только после atomic replace, `failed` при ошибке шага и `rolled_back` после успешного восстановления уже записанного файла. Отдельный флаг `applied` больше не используется.
 
-После каждого apply в timestamp-каталоге backup создаётся итоговый `manifest.json` с outcome операции, состояниями XML и отдельных удалений, путями backup и ошибками. Ошибка записи manifest показывается отдельно, не изменяет фактический outcome XML-мутации и приводит к CLI exit code 1.
+Каждый apply атомарно резервирует timestamp-каталог backup; коллизии в одну секунду получают суффиксы `-2`, `-3` и далее. В каталоге создаётся итоговый `manifest.json` с outcome операции, состояниями XML и отдельных удалений, путями backup и ошибками. Ошибка записи manifest показывается отдельно, не изменяет фактический outcome XML-мутации и приводит к CLI exit code 1.
 
 Dry-run и аудит эти проверки не выполняют — они только читают базу.
 

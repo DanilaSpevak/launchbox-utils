@@ -23,6 +23,18 @@ def backup_platform_xml(platform: PlatformInfo, backup_root: Path) -> Path:
     return backup_xml_file(platform.database_xml, backup_root)
 
 
+def reserve_unique_backup_root(backup_parent: Path, name: str) -> Path:
+    attempt = 1
+    while True:
+        suffix = "" if attempt == 1 else f"-{attempt}"
+        candidate = backup_parent / f"{name}{suffix}"
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            attempt += 1
+
+
 def write_xml_tree_safely(tree: ET.ElementTree, destination: Path) -> None:
     ensure_safe_to_mutate([destination])
     temp_path = destination.with_name(f"{destination.name}.tmp")

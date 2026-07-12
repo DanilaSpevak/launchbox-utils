@@ -914,6 +914,35 @@ language = fr
             self.assertEqual(manifest["files"], [])
             self.assertEqual(manifest["changes"], [])
 
+    def test_path_replacement_same_second_apply_uses_distinct_backup_roots(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            fixed_datetime = patch("launchbox_tools.operations.path_replacement.datetime")
+
+            with fixed_datetime as datetime_mock:
+                datetime_mock.now.return_value.strftime.return_value = "20260712-120000"
+                with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                    first = run_path_replacement(
+                        root,
+                        root / "Games" / "Missing",
+                        root / "Games" / "New",
+                        apply_changes=True,
+                    )
+                    first_manifest = first.manifest_path.read_text(encoding="utf-8")
+                    second = run_path_replacement(
+                        root,
+                        root / "Games" / "Missing",
+                        root / "Games" / "New",
+                        apply_changes=True,
+                    )
+
+            self.assertEqual(first.manifest_path.parent.name, "PathReplacement-20260712-120000")
+            self.assertEqual(second.manifest_path.parent.name, "PathReplacement-20260712-120000-2")
+            self.assertEqual(first.manifest_path.read_text(encoding="utf-8"), first_manifest)
+            self.assertTrue(second.manifest_path.is_file())
+
     def test_manifest_write_failure_does_not_change_committed_mutation_state(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
@@ -1305,6 +1334,25 @@ language = fr
             self.assertEqual(len(additional_apps), 2)
             self.assertIn("Keep this version", names)
             self.assertIn("Keep different game", names)
+
+    def test_dedupe_same_second_apply_uses_distinct_backup_roots(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(root, "")
+            fixed_datetime = patch("launchbox_tools.operations.dedupe_additional_apps.datetime")
+
+            with fixed_datetime as datetime_mock:
+                datetime_mock.now.return_value.strftime.return_value = "20260712-120000"
+                with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                    first = run_additional_apps_dedupe(root, apply_changes=True)
+                    first_manifest = first.manifest_path.read_text(encoding="utf-8")
+                    second = run_additional_apps_dedupe(root, apply_changes=True)
+
+            self.assertEqual(first.manifest_path.parent.name, "AdditionalAppsDedupe-20260712-120000")
+            self.assertEqual(second.manifest_path.parent.name, "AdditionalAppsDedupe-20260712-120000-2")
+            self.assertEqual(first.manifest_path.read_text(encoding="utf-8"), first_manifest)
+            self.assertTrue(second.manifest_path.is_file())
 
     def test_dedupe_propagates_rolled_back_file_state_to_duplicates_and_manifest(self) -> None:
         with self.make_root() as temp_dir:

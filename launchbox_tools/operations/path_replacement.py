@@ -17,7 +17,7 @@ from ..models import (
 from ..mutation_manifest import write_mutation_manifest
 from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
-from ..safe_write import XmlMutation, execute_xml_transaction
+from ..safe_write import XmlMutation, execute_xml_transaction, reserve_unique_backup_root
 from ..xml_repository import child_text, load_platforms, local_name, parse_xml_tree
 
 
@@ -237,7 +237,9 @@ def run_path_replacement(
         ensure_safe_to_mutate(xml_paths)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_root = root / "Data" / "Backups" / f"PathReplacement-{timestamp}"
+    backup_parent = root / "Data" / "Backups"
+    backup_name = f"PathReplacement-{timestamp}"
+    backup_root = backup_parent / backup_name
 
     platforms_tree = parse_xml_tree(platforms_xml)
     platforms_changed = _collect_platform_folder_replacements(
@@ -294,6 +296,9 @@ def run_path_replacement(
     for result in results:
         for replacement in result.replacements:
             replacement.state = planned_files_by_path[replacement.xml_path.resolve(strict=False)].state
+
+    if apply_changes:
+        backup_root = reserve_unique_backup_root(backup_parent, backup_name)
 
     if planning_errors:
         run_result = MutationRunResult(

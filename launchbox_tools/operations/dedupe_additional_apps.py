@@ -19,7 +19,7 @@ from ..models import (
 from ..mutation_manifest import write_mutation_manifest
 from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
-from ..safe_write import XmlMutation, execute_xml_transaction
+from ..safe_write import XmlMutation, execute_xml_transaction, reserve_unique_backup_root
 from ..xml_repository import load_application_entries, load_platforms, local_name, parse_xml_tree
 
 
@@ -258,7 +258,11 @@ def run_additional_apps_dedupe(
         ensure_safe_to_mutate(xml_paths)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_root = root / "Data" / "Backups" / f"AdditionalAppsDedupe-{timestamp}"
+    backup_parent = root / "Data" / "Backups"
+    backup_name = f"AdditionalAppsDedupe-{timestamp}"
+    backup_root = backup_parent / backup_name
+    if apply_changes:
+        backup_root = reserve_unique_backup_root(backup_parent, backup_name)
     results: list[AdditionalAppsDedupeResult] = []
     outcomes: list[MutationOutcome] = []
     rollback_errors: list[str] = []
