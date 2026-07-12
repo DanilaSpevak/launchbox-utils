@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -33,13 +34,18 @@ def write_mutation_manifest(
         ],
         "changes": changes,
     }
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    temp_path = manifest_path.with_name(f"{manifest_path.name}.tmp")
 
     try:
         backup_root.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        temp_path.write_text(serialized, encoding="utf-8")
+        os.replace(temp_path, manifest_path)
         run_result.manifest_path = manifest_path
     except OSError as exc:
         run_result.manifest_error = str(exc)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
