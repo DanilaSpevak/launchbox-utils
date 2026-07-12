@@ -1,4 +1,6 @@
+import contextlib
 import csv
+import io
 import json
 import sys
 import tempfile
@@ -597,6 +599,18 @@ language = fr
         self.assertIn("Committed XML files: 1", messages)
         self.assertIn("Manifest error: manifest denied", messages)
 
+    def test_gui_mutation_report_status_logs_report_error_separately(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        messages: list[str] = []
+        app.enqueue_log = messages.append
+        app.t = lambda key: translate("en", key)
+
+        app.log_mutation_report_status(Path("Reports"), "reports denied")
+
+        self.assertEqual(messages, ["Report error: reports denied"])
+
     def test_gui_language_button_toggles_and_saves_language(self) -> None:
         import tkinter as tk
 
@@ -697,6 +711,59 @@ language = fr
 
         self.assertEqual(run_result.outcome, MutationOutcome.SUCCESS)
         self.assertEqual(exit_code, 1)
+
+    def test_cli_preserves_dedupe_outcome_when_report_write_fails(self) -> None:
+        config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
+        run_result = MutationRunResult(
+            [],
+            MutationOutcome.SUCCESS,
+            files=[MutationFileResult(Path("C:/LaunchBox/NES.xml"), MutationState.COMMITTED)],
+            manifest_path=Path("C:/LaunchBox/Backups/run/manifest.json"),
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch("launchbox_tools.cli.load_app_config", return_value=config):
+            with patch("launchbox_tools.cli.run_additional_apps_dedupe", return_value=run_result):
+                with patch("launchbox_tools.cli.write_dedupe_reports", side_effect=OSError("reports denied")):
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        exit_code = main(["dedupe-additional-apps", "--apply"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Outcome: success", stdout.getvalue())
+        self.assertIn("XML files committed: 1", stdout.getvalue())
+        self.assertIn("Manifest: C:\\LaunchBox\\Backups\\run\\manifest.json", stdout.getvalue())
+        self.assertNotIn("Reports written to", stdout.getvalue())
+        self.assertIn("Report error: reports denied", stderr.getvalue())
+
+    def test_cli_preserves_path_replacement_outcome_when_report_write_fails(self) -> None:
+        config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
+        run_result = MutationRunResult(
+            [],
+            MutationOutcome.ROLLED_BACK,
+            files=[MutationFileResult(Path("C:/LaunchBox/NES.xml"), MutationState.ROLLED_BACK)],
+            manifest_path=Path("C:/LaunchBox/Backups/run/manifest.json"),
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch("launchbox_tools.cli.load_app_config", return_value=config):
+            with patch("launchbox_tools.cli.run_path_replacement", return_value=run_result):
+                with patch(
+                    "launchbox_tools.cli.write_path_replacement_reports",
+                    side_effect=OSError("reports denied"),
+                ):
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        exit_code = main(
+                            ["replace-paths", "--old", "C:/Old", "--new", "C:/New", "--apply"]
+                        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Outcome: rolled_back", stdout.getvalue())
+        self.assertIn("XML files rolled_back: 1", stdout.getvalue())
+        self.assertIn("Manifest: C:\\LaunchBox\\Backups\\run\\manifest.json", stdout.getvalue())
+        self.assertNotIn("Reports written to", stdout.getvalue())
+        self.assertIn("Report error: reports denied", stderr.getvalue())
 
     def test_resolve_command_uses_gui_for_packaged_gui_exe_without_args(self) -> None:
         parser = build_arg_parser()

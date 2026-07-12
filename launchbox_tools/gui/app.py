@@ -751,6 +751,12 @@ class LaunchBoxUtilsApp:
         if run_result.manifest_error:
             self.enqueue_log(f"{self.t('manifest_error')}: {run_result.manifest_error}")
 
+    def log_mutation_report_status(self, output_dir: Path, report_error: str | None) -> None:
+        if report_error:
+            self.enqueue_log(f"{self.t('report_error')}: {report_error}")
+        else:
+            self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
+
     def run_dedupe_operation(self, apply_changes: bool) -> None:
         paths = self.validate_paths()
         if paths is None:
@@ -774,7 +780,11 @@ class LaunchBoxUtilsApp:
             try:
                 run_result = run_additional_apps_dedupe(launchbox_root, apply_changes=apply_changes)
                 results = run_result.results
-                write_dedupe_reports(run_result, output_dir, apply_changes, only_with_findings)
+                report_error = None
+                try:
+                    write_dedupe_reports(run_result, output_dir, apply_changes, only_with_findings)
+                except Exception as exc:
+                    report_error = str(exc)
                 self.enqueue_log(f"{self.t('dedupe_mode')}: {'apply' if apply_changes else 'dry-run'}")
                 self.enqueue_log(f"{self.t('outcome')}: {self.t(f'outcome_{run_result.outcome.value}')}")
                 self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
@@ -793,10 +803,14 @@ class LaunchBoxUtilsApp:
                         self.enqueue_log(f"  {result.platform.name}: {result.error}")
                 for rollback_error in run_result.rollback_errors:
                     self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
-                self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
-                if run_result.outcome.value in {"dry_run", "success"} and not run_result.manifest_error:
+                self.log_mutation_report_status(output_dir, report_error)
+                if (
+                    run_result.outcome.value in {"dry_run", "success"}
+                    and not run_result.manifest_error
+                    and not report_error
+                ):
                     self.enqueue_log(self.t("finished"))
-                else:
+                elif run_result.outcome.value not in {"dry_run", "success"}:
                     self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
@@ -844,7 +858,11 @@ class LaunchBoxUtilsApp:
             try:
                 run_result = run_path_replacement(launchbox_root, old_path, new_path, apply_changes=apply_changes)
                 results = run_result.results
-                write_path_replacement_reports(run_result, output_dir, apply_changes, only_with_findings)
+                report_error = None
+                try:
+                    write_path_replacement_reports(run_result, output_dir, apply_changes, only_with_findings)
+                except Exception as exc:
+                    report_error = str(exc)
                 self.enqueue_log(f"{self.t('path_replacement_mode')}: {'apply' if apply_changes else 'dry-run'}")
                 self.enqueue_log(f"{self.t('outcome')}: {self.t(f'outcome_{run_result.outcome.value}')}")
                 self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
@@ -862,10 +880,14 @@ class LaunchBoxUtilsApp:
                         self.enqueue_log(f"  {result.platform.name}: {result.error}")
                 for rollback_error in run_result.rollback_errors:
                     self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
-                self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
-                if run_result.outcome.value in {"dry_run", "success"} and not run_result.manifest_error:
+                self.log_mutation_report_status(output_dir, report_error)
+                if (
+                    run_result.outcome.value in {"dry_run", "success"}
+                    and not run_result.manifest_error
+                    and not report_error
+                ):
                     self.enqueue_log(self.t("finished"))
-                else:
+                elif run_result.outcome.value not in {"dry_run", "success"}:
                     self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")

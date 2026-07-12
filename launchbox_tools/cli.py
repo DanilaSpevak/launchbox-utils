@@ -124,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_gui(config_path)
 
+    report_error: str | None = None
     try:
         app_config = load_app_config(
             config_path,
@@ -139,7 +140,10 @@ def main(argv: list[str] | None = None) -> int:
         elif command == "dedupe-additional-apps":
             mutation_run = run_additional_apps_dedupe(root, args.platform, args.apply)
             results = mutation_run.results
-            write_dedupe_reports(mutation_run, output_dir, args.apply, only_with_findings)
+            try:
+                write_dedupe_reports(mutation_run, output_dir, args.apply, only_with_findings)
+            except Exception as exc:
+                report_error = str(exc)
         elif command == "replace-paths":
             old_path = Path(args.old).expanduser()
             new_path = Path(args.new).expanduser()
@@ -147,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("replace-paths requires absolute --old and --new paths")
             mutation_run = run_path_replacement(root, old_path, new_path, args.platform, args.apply)
             results = mutation_run.results
-            write_path_replacement_reports(mutation_run, output_dir, args.apply, only_with_findings)
+            try:
+                write_path_replacement_reports(mutation_run, output_dir, args.apply, only_with_findings)
+            except Exception as exc:
+                report_error = str(exc)
         else:
             parser.error(f"Unknown command: {command}")
     except FileNotFoundError as exc:
@@ -221,7 +228,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {result.platform.name}: {result.error}", file=sys.stderr)
         for rollback_error in mutation_run.rollback_errors:
             print(f"Rollback error: {rollback_error}", file=sys.stderr)
-    print(f"Reports written to: {output_dir}")
+    if report_error:
+        print(f"Report error: {report_error}", file=sys.stderr)
+    else:
+        print(f"Reports written to: {output_dir}")
     if command in {"dedupe-additional-apps", "replace-paths"} and mutation_run.outcome in {
         MutationOutcome.PARTIAL,
         MutationOutcome.FAILED,
@@ -229,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
     }:
         return _finish(1)
     if command in {"dedupe-additional-apps", "replace-paths"} and mutation_run.manifest_error:
+        return _finish(1)
+    if report_error:
         return _finish(1)
     return _finish(0)
 
