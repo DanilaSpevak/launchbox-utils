@@ -82,7 +82,7 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
     stage_paths: dict[Path, Path] = {}
     rollback_paths: set[Path] = set()
     committed: list[Path] = []
-    files = [MutationFileResult(mutation.destination.resolve(strict=False)) for mutation in mutations]
+    files = [MutationFileResult(mutation.destination.absolute()) for mutation in mutations]
     files_by_path = {result.path: result for result in files}
 
     try:
@@ -91,11 +91,12 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
         for mutation, file_result in zip(mutations, files):
             destination = file_result.path
             try:
-                if destination in seen:
+                canonical_destination = destination.resolve(strict=False)
+                if canonical_destination in seen:
                     raise ValueError(f"Duplicate XML transaction destination: {destination}")
                 if not destination.is_file():
                     raise FileNotFoundError(f"XML transaction destination not found: {destination}")
-                seen.add(destination)
+                seen.add(canonical_destination)
                 buffer = io.BytesIO()
                 mutation.tree.write(buffer, encoding="utf-8", xml_declaration=True)
                 payload = buffer.getvalue()
