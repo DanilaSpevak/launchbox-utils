@@ -7,7 +7,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from launchbox_tools.cli import _resolve_command, build_arg_parser, main
 from launchbox_tools.config import (
@@ -612,6 +612,85 @@ language = fr
 
         self.assertEqual(messages, ["Report error: reports denied"])
 
+    def test_gui_dedupe_worker_preserves_outcome_for_empty_report_error(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        messages: list[str] = []
+        app.validate_paths = Mock(return_value=(Path("C:/LaunchBox"), Path("C:/Reports")))
+        app.audit_output_mode_var = Mock()
+        app.audit_output_mode_var.get.return_value = "all"
+        app.enqueue_log = messages.append
+        app.t = lambda key: translate("en", key)
+        app.start_worker = lambda _message, worker: worker()
+        run_result = MutationRunResult(
+            [],
+            MutationOutcome.SUCCESS,
+            files=[MutationFileResult(Path("C:/LaunchBox/NES.xml"), MutationState.COMMITTED)],
+            manifest_path=Path("C:/LaunchBox/Backups/run/manifest.json"),
+        )
+
+        with patch("launchbox_tools.gui.app.load_platforms", return_value=[]):
+            with patch("launchbox_tools.gui.app.ensure_safe_to_mutate"):
+                with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
+                    with patch(
+                        "launchbox_tools.gui.app.run_additional_apps_dedupe",
+                        return_value=run_result,
+                    ):
+                        with patch(
+                            "launchbox_tools.gui.app.write_dedupe_reports",
+                            side_effect=OSError(),
+                        ):
+                            app.run_dedupe_operation(True)
+
+        joined = "\n".join(messages)
+        self.assertIn("Outcome: Success", joined)
+        self.assertIn("Committed XML files: 1", joined)
+        self.assertIn("Manifest: C:\\LaunchBox\\Backups\\run\\manifest.json", joined)
+        self.assertIn("Report error: OSError", joined)
+        self.assertNotIn("Reports written to", joined)
+        self.assertNotIn("Finished", joined)
+
+    def test_gui_path_worker_preserves_outcome_and_logs_unexpected_report_traceback(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        messages: list[str] = []
+        app.validate_paths = Mock(return_value=(Path("C:/LaunchBox"), Path("C:/Reports")))
+        app.validate_replacement_paths = Mock(return_value=(Path("C:/Old"), Path("C:/New")))
+        app.audit_output_mode_var = Mock()
+        app.audit_output_mode_var.get.return_value = "all"
+        app.enqueue_log = messages.append
+        app.t = lambda key: translate("en", key)
+        app.start_worker = lambda _message, worker: worker()
+        run_result = MutationRunResult(
+            [],
+            MutationOutcome.ROLLED_BACK,
+            files=[MutationFileResult(Path("C:/LaunchBox/NES.xml"), MutationState.ROLLED_BACK)],
+            manifest_path=Path("C:/LaunchBox/Backups/run/manifest.json"),
+        )
+
+        with patch("launchbox_tools.gui.app.load_platforms", return_value=[]):
+            with patch("launchbox_tools.gui.app.ensure_safe_to_mutate"):
+                with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
+                    with patch(
+                        "launchbox_tools.gui.app.run_path_replacement",
+                        return_value=run_result,
+                    ):
+                        with patch(
+                            "launchbox_tools.gui.app.write_path_replacement_reports",
+                            side_effect=RuntimeError("report bug"),
+                        ):
+                            app.run_path_replacement_operation(True)
+
+        joined = "\n".join(messages)
+        self.assertIn("Outcome: Rolled back", joined)
+        self.assertIn("Rolled-back XML files: 1", joined)
+        self.assertIn("Report error: report bug", joined)
+        self.assertIn("Traceback (most recent call last)", joined)
+        self.assertIn("RuntimeError: report bug", joined)
+        self.assertNotIn("Reports written to", joined)
+
     def test_gui_language_button_toggles_and_saves_language(self) -> None:
         import tkinter as tk
 
@@ -726,7 +805,7 @@ language = fr
 
         with patch("launchbox_tools.cli.load_app_config", return_value=config):
             with patch("launchbox_tools.cli.run_additional_apps_dedupe", return_value=run_result):
-                with patch("launchbox_tools.cli.write_dedupe_reports", side_effect=OSError("reports denied")):
+                with patch("launchbox_tools.cli.write_dedupe_reports", side_effect=OSError()):
                     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                         exit_code = main(["dedupe-additional-apps", "--apply"])
 
@@ -735,7 +814,7 @@ language = fr
         self.assertIn("XML files committed: 1", stdout.getvalue())
         self.assertIn("Manifest: C:\\LaunchBox\\Backups\\run\\manifest.json", stdout.getvalue())
         self.assertNotIn("Reports written to", stdout.getvalue())
-        self.assertIn("Report error: reports denied", stderr.getvalue())
+        self.assertIn("Report error: OSError", stderr.getvalue())
 
     def test_cli_preserves_path_replacement_outcome_when_report_write_fails(self) -> None:
         config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
@@ -752,7 +831,7 @@ language = fr
             with patch("launchbox_tools.cli.run_path_replacement", return_value=run_result):
                 with patch(
                     "launchbox_tools.cli.write_path_replacement_reports",
-                    side_effect=OSError("reports denied"),
+                    side_effect=RuntimeError("report bug"),
                 ):
                     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                         exit_code = main(
@@ -764,7 +843,9 @@ language = fr
         self.assertIn("XML files rolled_back: 1", stdout.getvalue())
         self.assertIn("Manifest: C:\\LaunchBox\\Backups\\run\\manifest.json", stdout.getvalue())
         self.assertNotIn("Reports written to", stdout.getvalue())
-        self.assertIn("Report error: reports denied", stderr.getvalue())
+        self.assertIn("Report error: report bug", stderr.getvalue())
+        self.assertIn("Traceback (most recent call last)", stderr.getvalue())
+        self.assertIn("RuntimeError: report bug", stderr.getvalue())
 
     def test_resolve_command_uses_gui_for_packaged_gui_exe_without_args(self) -> None:
         parser = build_arg_parser()
@@ -967,6 +1048,21 @@ language = fr
             self.assertIsNone(run_result.manifest_path)
             self.assertFalse(list(root.rglob("manifest.json.tmp")))
             self.assertFalse(list(root.rglob("manifest.json")))
+
+    def test_manifest_write_failure_without_message_uses_exception_type(self) -> None:
+        run_result = MutationRunResult([], MutationOutcome.SUCCESS)
+
+        with patch("launchbox_tools.mutation_manifest.Path.mkdir"):
+            with patch(
+                "launchbox_tools.mutation_manifest.Path.write_text",
+                side_effect=OSError(),
+            ):
+                with patch("launchbox_tools.mutation_manifest.Path.unlink"):
+                    write_mutation_manifest(run_result, Path("C:/Backups/run"), "test_operation", [])
+
+        self.assertEqual(run_result.outcome, MutationOutcome.SUCCESS)
+        self.assertEqual(run_result.manifest_error, "OSError")
+        self.assertIsNone(run_result.manifest_path)
 
     def test_manifest_replace_failure_preserves_existing_manifest_and_cleans_temp(self) -> None:
         with self.make_root() as temp_dir:

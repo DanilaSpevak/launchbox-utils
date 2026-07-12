@@ -19,6 +19,7 @@ from ..config import (
     save_interface_language,
     save_raw_path_config,
 )
+from ..diagnostics import describe_exception
 from ..models import MutationRunResult, MutationState
 from ..operations.audit import run_audit
 from ..operations.dedupe_additional_apps import run_additional_apps_dedupe
@@ -748,12 +749,19 @@ class LaunchBoxUtilsApp:
             self.enqueue_log(f"{self.t(f'state_{state.value}')}: {count}")
         if run_result.manifest_path:
             self.enqueue_log(f"{self.t('manifest')}: {run_result.manifest_path}")
-        if run_result.manifest_error:
+        if run_result.manifest_error is not None:
             self.enqueue_log(f"{self.t('manifest_error')}: {run_result.manifest_error}")
 
-    def log_mutation_report_status(self, output_dir: Path, report_error: str | None) -> None:
-        if report_error:
+    def log_mutation_report_status(
+        self,
+        output_dir: Path,
+        report_error: str | None,
+        report_traceback: str | None = None,
+    ) -> None:
+        if report_error is not None:
             self.enqueue_log(f"{self.t('report_error')}: {report_error}")
+            if report_traceback is not None:
+                self.enqueue_log(report_traceback)
         else:
             self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
 
@@ -781,10 +789,14 @@ class LaunchBoxUtilsApp:
                 run_result = run_additional_apps_dedupe(launchbox_root, apply_changes=apply_changes)
                 results = run_result.results
                 report_error = None
+                report_traceback = None
                 try:
                     write_dedupe_reports(run_result, output_dir, apply_changes, only_with_findings)
+                except OSError as exc:
+                    report_error = describe_exception(exc)
                 except Exception as exc:
-                    report_error = str(exc)
+                    report_error = describe_exception(exc)
+                    report_traceback = traceback.format_exc()
                 self.enqueue_log(f"{self.t('dedupe_mode')}: {'apply' if apply_changes else 'dry-run'}")
                 self.enqueue_log(f"{self.t('outcome')}: {self.t(f'outcome_{run_result.outcome.value}')}")
                 self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
@@ -803,11 +815,11 @@ class LaunchBoxUtilsApp:
                         self.enqueue_log(f"  {result.platform.name}: {result.error}")
                 for rollback_error in run_result.rollback_errors:
                     self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
-                self.log_mutation_report_status(output_dir, report_error)
+                self.log_mutation_report_status(output_dir, report_error, report_traceback)
                 if (
                     run_result.outcome.value in {"dry_run", "success"}
-                    and not run_result.manifest_error
-                    and not report_error
+                    and run_result.manifest_error is None
+                    and report_error is None
                 ):
                     self.enqueue_log(self.t("finished"))
                 elif run_result.outcome.value not in {"dry_run", "success"}:
@@ -859,10 +871,14 @@ class LaunchBoxUtilsApp:
                 run_result = run_path_replacement(launchbox_root, old_path, new_path, apply_changes=apply_changes)
                 results = run_result.results
                 report_error = None
+                report_traceback = None
                 try:
                     write_path_replacement_reports(run_result, output_dir, apply_changes, only_with_findings)
+                except OSError as exc:
+                    report_error = describe_exception(exc)
                 except Exception as exc:
-                    report_error = str(exc)
+                    report_error = describe_exception(exc)
+                    report_traceback = traceback.format_exc()
                 self.enqueue_log(f"{self.t('path_replacement_mode')}: {'apply' if apply_changes else 'dry-run'}")
                 self.enqueue_log(f"{self.t('outcome')}: {self.t(f'outcome_{run_result.outcome.value}')}")
                 self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
@@ -880,11 +896,11 @@ class LaunchBoxUtilsApp:
                         self.enqueue_log(f"  {result.platform.name}: {result.error}")
                 for rollback_error in run_result.rollback_errors:
                     self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
-                self.log_mutation_report_status(output_dir, report_error)
+                self.log_mutation_report_status(output_dir, report_error, report_traceback)
                 if (
                     run_result.outcome.value in {"dry_run", "success"}
-                    and not run_result.manifest_error
-                    and not report_error
+                    and run_result.manifest_error is None
+                    and report_error is None
                 ):
                     self.enqueue_log(self.t("finished"))
                 elif run_result.outcome.value not in {"dry_run", "success"}:

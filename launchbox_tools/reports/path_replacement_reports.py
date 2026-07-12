@@ -126,7 +126,7 @@ def write_path_replacement_reports(
             file.write(f"Outcome: {run_result.outcome.value}\n")
             if run_result.manifest_path:
                 file.write(f"Manifest: {run_result.manifest_path}\n")
-            if run_result.manifest_error:
+            if run_result.manifest_error is not None:
                 file.write(f"Manifest error: {run_result.manifest_error}\n")
             if result.backup_paths:
                 file.write("Backups:\n")

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .config import ConfigError, DEFAULT_CONFIG_PATH, load_app_config, resolve_config_path
+from .diagnostics import describe_exception
 from .models import MutationOutcome, MutationRunResult, MutationState
 from .runtime_checks import MutationBlockedError
 from .operations.audit import run_audit
@@ -40,7 +42,7 @@ def _print_mutation_state_summary(run_result: MutationRunResult[object]) -> None
         print(f"XML files {state.value}: {count}")
     if run_result.manifest_path:
         print(f"Manifest: {run_result.manifest_path}")
-    if run_result.manifest_error:
+    if run_result.manifest_error is not None:
         print(f"Manifest error: {run_result.manifest_error}", file=sys.stderr)
 
 
@@ -125,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         return run_gui(config_path)
 
     report_error: str | None = None
+    report_traceback: str | None = None
     try:
         app_config = load_app_config(
             config_path,
@@ -142,8 +145,11 @@ def main(argv: list[str] | None = None) -> int:
             results = mutation_run.results
             try:
                 write_dedupe_reports(mutation_run, output_dir, args.apply, only_with_findings)
+            except OSError as exc:
+                report_error = describe_exception(exc)
             except Exception as exc:
-                report_error = str(exc)
+                report_error = describe_exception(exc)
+                report_traceback = traceback.format_exc()
         elif command == "replace-paths":
             old_path = Path(args.old).expanduser()
             new_path = Path(args.new).expanduser()
@@ -153,8 +159,11 @@ def main(argv: list[str] | None = None) -> int:
             results = mutation_run.results
             try:
                 write_path_replacement_reports(mutation_run, output_dir, args.apply, only_with_findings)
+            except OSError as exc:
+                report_error = describe_exception(exc)
             except Exception as exc:
-                report_error = str(exc)
+                report_error = describe_exception(exc)
+                report_traceback = traceback.format_exc()
         else:
             parser.error(f"Unknown command: {command}")
     except FileNotFoundError as exc:
@@ -228,8 +237,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {result.platform.name}: {result.error}", file=sys.stderr)
         for rollback_error in mutation_run.rollback_errors:
             print(f"Rollback error: {rollback_error}", file=sys.stderr)
-    if report_error:
+    if report_error is not None:
         print(f"Report error: {report_error}", file=sys.stderr)
+        if report_traceback is not None:
+            print(report_traceback, file=sys.stderr, end="")
     else:
         print(f"Reports written to: {output_dir}")
     if command in {"dedupe-additional-apps", "replace-paths"} and mutation_run.outcome in {
@@ -238,9 +249,9 @@ def main(argv: list[str] | None = None) -> int:
         MutationOutcome.ROLLED_BACK,
     }:
         return _finish(1)
-    if command in {"dedupe-additional-apps", "replace-paths"} and mutation_run.manifest_error:
+    if command in {"dedupe-additional-apps", "replace-paths"} and mutation_run.manifest_error is not None:
         return _finish(1)
-    if report_error:
+    if report_error is not None:
         return _finish(1)
     return _finish(0)
 

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .diagnostics import describe_exception
 from .models import MutationRunResult
 
 
@@ -43,7 +44,7 @@ def write_mutation_manifest(
         os.replace(temp_path, manifest_path)
         run_result.manifest_path = manifest_path
     except OSError as exc:
-        run_result.manifest_error = str(exc)
+        run_result.manifest_error = describe_exception(exc)
     finally:
         try:
             temp_path.unlink(missing_ok=True)
