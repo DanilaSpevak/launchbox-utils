@@ -42,10 +42,19 @@ class AdditionalApplicationDuplicate:
     key: tuple[str, str]
 
 
+@dataclass(frozen=True)
+class AdditionalApplicationAmbiguity:
+    platform: PlatformInfo
+    key: tuple[str, str]
+    variants: tuple[GameEntry, ...]
+    differing_fields: tuple[str, ...]
+
+
 @dataclass
 class AdditionalAppsDedupeResult:
     platform: PlatformInfo
     duplicates: list[AdditionalApplicationDuplicate] = field(default_factory=list)
+    ambiguities: list[AdditionalApplicationAmbiguity] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     backup_path: Path | None = None
     applied: bool = False

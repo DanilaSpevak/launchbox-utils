@@ -767,6 +767,7 @@ class LaunchBoxUtilsApp:
                 self.enqueue_log(f"{self.t('dedupe_mode')}: {'apply' if apply_changes else 'dry-run'}")
                 self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
                 self.enqueue_log(f"{self.t('duplicates')}: {sum(len(result.duplicates) for result in results)}")
+                self.enqueue_log(f"{self.t('ambiguities')}: {sum(len(result.ambiguities) for result in results)}")
                 self.enqueue_log(f"{self.t('changed_files')}: {sum(1 for result in results if result.applied)}")
                 self.enqueue_log(f"{self.t('warnings')}: {sum(len(result.warnings) for result in results)}")
                 failed_results = [result for result in results if result.error]

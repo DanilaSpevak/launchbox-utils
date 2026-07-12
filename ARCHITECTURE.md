@@ -95,12 +95,14 @@ Relative `output_dir` values are resolved from `launchbox_root`.
 
 Path replacement edits the three path-bearing fields above: platform `Folder`, main game `ApplicationPath`, and additional application `ApplicationPath`. Absolute database values stay absolute; relative values are rewritten relative to the LaunchBox root.
 
-For Additional Apps dedupe, duplicates are records where both values match:
+For Additional Apps dedupe, records are first grouped where both values match:
 
 - `GameID`
 - normalized `ApplicationPath`
 
-The first matching entry is kept; later entries are treated as duplicates.
+Within each group, the complete `<AdditionalApplication>` XML content is canonicalized. Field order, insignificant whitespace, boolean casing, `GameID` casing, and normalized path spelling do not create distinct variants. All other content, including names, command lines, emulator settings, attributes, nested elements, repeated elements, and unknown future fields, remains significant.
+
+Only repeated canonical variants are automatic duplicates. If a group contains multiple canonical variants, one representative of each is preserved and the group is reported as ambiguous for manual review. For `A, A, B`, only the second `A` is removable.
 
 ## Safety Rules For XML-Modifying Operations
 

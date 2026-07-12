@@ -164,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Warnings: {warning_count}")
     elif command == "dedupe-additional-apps":
         duplicate_count = sum(len(result.duplicates) for result in results)
+        ambiguous_count = sum(len(result.ambiguities) for result in results)
         changed_count = sum(1 for result in results if result.applied)
         warning_count = sum(len(result.warnings) for result in results)
         failed_results = [result for result in results if result.error]
@@ -172,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Dedupe mode: {mode}")
         print(f"Processed platforms: {len(results)}")
         print(f"Duplicate AdditionalApplication entries: {duplicate_count}")
+        print(f"Ambiguous AdditionalApplication groups: {ambiguous_count}")
         print(f"Changed platform XML files: {changed_count}")
         print(f"Warnings: {warning_count}")
         if failed_results:

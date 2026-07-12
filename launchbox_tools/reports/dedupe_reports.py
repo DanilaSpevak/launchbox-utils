@@ -11,7 +11,7 @@ DEDUPE_DETAIL_FILES = ("duplicate_additional_apps.txt",)
 
 
 def dedupe_result_has_findings(result: AdditionalAppsDedupeResult) -> bool:
-    return bool(result.duplicates or result.warnings or result.error)
+    return bool(result.duplicates or result.ambiguities or result.warnings or result.error)
 
 
 def cleanup_dedupe_detail_files(platform_dir: Path) -> None:
@@ -43,6 +43,7 @@ def write_dedupe_reports(
             writer.writerow(
                 [
                     "mode",
+                    "finding_type",
                     "platform",
                     "game_id",
                     "duplicate_title",
@@ -53,6 +54,8 @@ def write_dedupe_reports(
                     "backup_path",
                     "error",
                     "warnings",
+                    "differing_fields",
+                    "variant_count",
                 ]
             )
             for result in summary_results:
@@ -61,6 +64,7 @@ def write_dedupe_reports(
                         writer.writerow(
                             [
                                 mode,
+                                "duplicate",
                                 result.platform.name,
                                 duplicate.duplicate.game_id,
                                 duplicate.duplicate.title,
@@ -71,12 +75,35 @@ def write_dedupe_reports(
                                 result.backup_path or "",
                                 result.error or "",
                                 " | ".join(result.warnings),
+                                "",
+                                "",
                             ]
                         )
-                else:
+                for ambiguity in result.ambiguities:
+                    for variant in ambiguity.variants:
+                        writer.writerow(
+                            [
+                                mode,
+                                "ambiguous",
+                                result.platform.name,
+                                variant.game_id,
+                                variant.title,
+                                variant.application_path,
+                                "",
+                                "",
+                                False,
+                                result.backup_path or "",
+                                result.error or "",
+                                " | ".join(result.warnings),
+                                " | ".join(ambiguity.differing_fields),
+                                len(ambiguity.variants),
+                            ]
+                        )
+                if not result.duplicates and not result.ambiguities:
                     writer.writerow(
                         [
                             mode,
+                            "",
                             result.platform.name,
                             "",
                             "",
@@ -87,6 +114,8 @@ def write_dedupe_reports(
                             result.backup_path or "",
                             result.error or "",
                             " | ".join(result.warnings),
+                            "",
+                            "",
                         ]
                     )
 
@@ -125,3 +154,12 @@ def write_dedupe_reports(
             for duplicate in result.duplicates:
                 file.write(f"  Remove: {duplicate.duplicate.application_path} | {duplicate.duplicate.title} | GameID: {duplicate.duplicate.game_id}\n")
                 file.write(f"  Keep:   {duplicate.kept.application_path} | {duplicate.kept.title}\n\n")
+            file.write("\nAmbiguous AdditionalApplication groups:\n")
+            if not result.ambiguities:
+                file.write("  <none>\n")
+            for ambiguity in result.ambiguities:
+                file.write(f"  GameID: {ambiguity.variants[0].game_id} | Path: {ambiguity.variants[0].application_path}\n")
+                file.write(f"  Differing fields: {', '.join(ambiguity.differing_fields)}\n")
+                for variant in ambiguity.variants:
+                    file.write(f"  Keep variant: {variant.title} | {variant.application_path}\n")
+                file.write("\n")

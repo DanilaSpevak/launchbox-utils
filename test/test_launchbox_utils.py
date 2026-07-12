@@ -113,7 +113,7 @@ class LaunchBoxAuditTests(unittest.TestCase):
   </AdditionalApplication>
   <AdditionalApplication>
     <GameID>{game_id}</GameID>
-    <Name>{remove_title}</Name>
+    <Name>{keep_title}</Name>
     <ApplicationPath>{path}</ApplicationPath>
   </AdditionalApplication>"""
 
@@ -678,7 +678,7 @@ language = fr
   </AdditionalApplication>
   <AdditionalApplication>
     <GameID>game-1</GameID>
-    <Name>Удалить этот дубль</Name>
+    <Name>Keep this version</Name>
     <ApplicationPath>Games/NES/duplicate.zip</ApplicationPath>
   </AdditionalApplication>""",
             )
@@ -696,11 +696,11 @@ language = fr
             platform_report = output_dir / "Nintendo Entertainment System" / "duplicate_additional_apps.txt"
             report_text = platform_report.read_text(encoding="utf-8")
             self.assertIn("Mode: dry-run", report_text)
-            self.assertIn("Удалить этот дубль", report_text)
+            self.assertIn("Keep this version", report_text)
 
             summary_text = (output_dir / "duplicate_additional_apps.csv").read_text(encoding="utf-8-sig")
             self.assertTrue(summary_text.startswith("sep=;\n"))
-            self.assertIn("Удалить этот дубль", summary_text)
+            self.assertIn("Keep this version", summary_text)
 
     def test_dedupe_additional_apps_apply_removes_duplicates_and_creates_backup(self) -> None:
         with self.make_root() as temp_dir:
@@ -715,7 +715,7 @@ language = fr
   </AdditionalApplication>
   <AdditionalApplication>
     <GameID>game-1</GameID>
-    <Name>Remove this duplicate</Name>
+    <Name>Keep this version</Name>
     <ApplicationPath>Games/NES/duplicate.zip</ApplicationPath>
   </AdditionalApplication>
   <AdditionalApplication>
@@ -738,7 +738,55 @@ language = fr
             self.assertEqual(len(additional_apps), 2)
             self.assertIn("Keep this version", names)
             self.assertIn("Keep different game", names)
-            self.assertNotIn("Remove this duplicate", names)
+
+    def test_conservative_dedupe_fixture_dry_run_reports_duplicates_and_ambiguities(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            fixture_path = Path(__file__).parent / "fixtures" / "conservative_dedupe.xml"
+            xml_path.write_text(fixture_path.read_text(encoding="utf-8"), encoding="utf-8")
+            before = xml_path.read_text(encoding="utf-8")
+
+            result = run_additional_apps_dedupe(root, apply_changes=False)[0]
+            output_dir = root / "AuditReports"
+            write_dedupe_reports([result], output_dir, apply_changes=False)
+
+            self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
+            self.assertEqual(len(result.duplicates), 2)
+            self.assertEqual(len(result.ambiguities), 6)
+            fields = {field for ambiguity in result.ambiguities for field in ambiguity.differing_fields}
+            self.assertTrue(
+                {"CommandLine", "AutoRunBefore", "AutoRunAfter", "EmulatorId", "Name", "FutureSetting"} <= fields
+            )
+            report = (output_dir / "Nintendo Entertainment System" / "duplicate_additional_apps.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Ambiguous AdditionalApplication groups:", report)
+            self.assertIn("Differing fields: CommandLine", report)
+            summary = (output_dir / "duplicate_additional_apps.csv").read_text(encoding="utf-8-sig")
+            self.assertIn(";duplicate;", summary)
+            self.assertIn(";ambiguous;", summary)
+
+    def test_conservative_dedupe_fixture_apply_removes_only_canonical_duplicates(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            fixture_path = Path(__file__).parent / "fixtures" / "conservative_dedupe.xml"
+            xml_path.write_text(fixture_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                result = run_additional_apps_dedupe(root, apply_changes=True)[0]
+
+            remaining = [element for element in parse_xml(xml_path) if local_name(element.tag) == "AdditionalApplication"]
+            self.assertTrue(result.applied)
+            self.assertIsNotNone(result.backup_path)
+            self.assertTrue(result.backup_path.exists())
+            self.assertEqual(len(result.duplicates), 2)
+            self.assertEqual(len(result.ambiguities), 6)
+            self.assertEqual(len(remaining), 13)
+            self.assertEqual(sum(child_text(element, "GameID") == "mixed" for element in remaining), 2)
 
     def test_ensure_safe_to_mutate_blocks_when_launchbox_running(self) -> None:
         with self.make_root() as temp_dir:

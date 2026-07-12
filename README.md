@@ -219,12 +219,14 @@ Platform subfolder names are sanitized of characters invalid in Windows file nam
 
 ## Additional Apps deduplication
 
-Duplicates are `<AdditionalApplication>` entries that match on:
+`<AdditionalApplication>` entries are first grouped by:
 
 - `GameID` (case-insensitive);
 - file path after resolving relative to the LaunchBox root and normalizing (case-insensitive).
 
-When they match, the first found entry is kept and the rest are treated as duplicates. Entries with an empty `GameID` or `ApplicationPath` are skipped and appear in the report warnings.
+Automatic removal is limited to entries whose complete XML content is canonically equal. Field order, insignificant whitespace, boolean casing, `GameID` casing, and equivalent path spelling are normalized. Every other field remains significant, including `Name`, `CommandLine`, autorun flags, emulator settings, attributes, nested data, and unknown future fields.
+
+Groups with the same `GameID` and path but different canonical content are reported as ambiguous and left for manual review. If a group contains `A, A, B`, only the repeated `A` is removable; one `A` and `B` remain. Entries with an empty `GameID` or `ApplicationPath` are skipped and appear in the report warnings.
 
 ### Dry-run (default)
 
@@ -238,7 +240,7 @@ Dry-run for a single platform:
 python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 ```
 
-Reports only for platforms with duplicates or warnings:
+Reports only for platforms with duplicates, ambiguous groups, or warnings:
 
 ```powershell
 python launchbox_utils.py dedupe-additional-apps --only-with-findings
@@ -287,8 +289,8 @@ Dry-run and audit do not perform these checks — they only read the database.
 <output_dir>\<PlatformName>\duplicate_additional_apps.txt
 ```
 
-- `duplicate_additional_apps.csv` — summary table (UTF-8 with BOM encoding, `;` delimiter, first line `sep=;` for Excel).
-- `duplicate_additional_apps.txt` — per-platform details: which entries to remove and which to keep.
+- `duplicate_additional_apps.csv` — summary table with `duplicate` and `ambiguous` finding types (UTF-8 with BOM encoding, `;` delimiter, first line `sep=;` for Excel).
+- `duplicate_additional_apps.txt` — per-platform details: which canonical duplicates can be removed and which ambiguous variants must be kept.
 
 Review dry-run reports before apply.
 
@@ -614,12 +616,14 @@ python launchbox_utils.py audit --only-with-findings
 
 ## Дедупликация Additional Apps
 
-Дублями считаются записи `<AdditionalApplication>`, у которых совпадают:
+Записи `<AdditionalApplication>` сначала группируются по следующим полям:
 
 - `GameID` (без учёта регистра);
 - путь к файлу после разрешения относительно корня LaunchBox и нормализации (без учёта регистра).
 
-При совпадении сохраняется первая найденная запись, остальные считаются дублями. Записи с пустым `GameID` или `ApplicationPath` пропускаются и попадают в предупреждения отчёта.
+Автоматически удаляются только записи с канонически одинаковым полным XML-содержимым. Нормализуются порядок полей, незначащие пробелы, регистр булевых значений и `GameID`, а также эквивалентное написание пути. Все остальные поля значимы, включая `Name`, `CommandLine`, флаги автозапуска, настройки эмулятора, атрибуты, вложенные данные и неизвестные будущие поля.
+
+Группы с одинаковыми `GameID` и путём, но разным каноническим содержимым отмечаются как ambiguous и остаются для ручного решения. Для группы `A, A, B` удалению подлежит только повторный `A`; по одному варианту `A` и `B` сохраняются. Записи с пустым `GameID` или `ApplicationPath` пропускаются и попадают в предупреждения отчёта.
 
 ### Dry-run (по умолчанию)
 
@@ -633,7 +637,7 @@ Dry-run для одной платформы:
 python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 ```
 
-Отчёты только для платформ с дублями или предупреждениями:
+Отчёты только для платформ с дублями, ambiguous-группами или предупреждениями:
 
 ```powershell
 python launchbox_utils.py dedupe-additional-apps --only-with-findings
@@ -682,8 +686,8 @@ Dry-run и аудит эти проверки не выполняют — они
 <output_dir>\<PlatformName>\duplicate_additional_apps.txt
 ```
 
-- `duplicate_additional_apps.csv` — сводная таблица (кодировка UTF-8 с BOM, разделитель `;`, первая строка `sep=;` для Excel).
-- `duplicate_additional_apps.txt` — детали по платформе: какие записи удалить и какие оставить.
+- `duplicate_additional_apps.csv` — сводная таблица с типами находок `duplicate` и `ambiguous` (кодировка UTF-8 с BOM, разделитель `;`, первая строка `sep=;` для Excel).
+- `duplicate_additional_apps.txt` — детали по платформе: какие канонические дубли можно удалить и какие ambiguous-варианты необходимо оставить.
 
 Перед apply рекомендуется просмотреть отчёты dry-run.
 

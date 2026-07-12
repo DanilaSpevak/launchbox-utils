@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <AdditionalApplication>
+    <GameID>exact</GameID><Name>Exact</Name><ApplicationPath>Games/NES/exact.zip</ApplicationPath><AutoRunBefore>True</AutoRunBefore>
+  </AdditionalApplication>
+  <AdditionalApplication>
+    <AutoRunBefore>true</AutoRunBefore><ApplicationPath>Games\NES\exact.zip</ApplicationPath><Name>Exact</Name><GameID> EXACT </GameID>
+  </AdditionalApplication>
+  <AdditionalApplication><GameID>command</GameID><Name>Command</Name><ApplicationPath>Games/NES/command.zip</ApplicationPath><CommandLine>-a</CommandLine></AdditionalApplication>
+  <AdditionalApplication><GameID>command</GameID><Name>Command</Name><ApplicationPath>Games/NES/command.zip</ApplicationPath><CommandLine>-b</CommandLine></AdditionalApplication>
+  <AdditionalApplication><GameID>autorun</GameID><Name>Autorun</Name><ApplicationPath>Games/NES/autorun.zip</ApplicationPath><AutoRunBefore>true</AutoRunBefore><AutoRunAfter>false</AutoRunAfter></AdditionalApplication>
+  <AdditionalApplication><GameID>autorun</GameID><Name>Autorun</Name><ApplicationPath>Games/NES/autorun.zip</ApplicationPath><AutoRunBefore>false</AutoRunBefore><AutoRunAfter>true</AutoRunAfter></AdditionalApplication>
+  <AdditionalApplication><GameID>emulator</GameID><Name>Emulator</Name><ApplicationPath>Games/NES/emulator.zip</ApplicationPath><UseEmulator>true</UseEmulator><EmulatorId>emu-a</EmulatorId></AdditionalApplication>
+  <AdditionalApplication><GameID>emulator</GameID><Name>Emulator</Name><ApplicationPath>Games/NES/emulator.zip</ApplicationPath><UseEmulator>true</UseEmulator><EmulatorId>emu-b</EmulatorId></AdditionalApplication>
+  <AdditionalApplication><GameID>name</GameID><Name>Name A</Name><ApplicationPath>Games/NES/name.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication><GameID>name</GameID><Name>Name B</Name><ApplicationPath>Games/NES/name.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication><GameID>future</GameID><Name>Future</Name><ApplicationPath>Games/NES/future.zip</ApplicationPath><FutureSetting>one</FutureSetting></AdditionalApplication>
+  <AdditionalApplication><GameID>future</GameID><Name>Future</Name><ApplicationPath>Games/NES/future.zip</ApplicationPath><FutureSetting>two</FutureSetting></AdditionalApplication>
+  <AdditionalApplication><GameID>mixed</GameID><Name>Mixed</Name><ApplicationPath>Games/NES/mixed.zip</ApplicationPath><CommandLine>-a</CommandLine></AdditionalApplication>
+  <AdditionalApplication><CommandLine>-a</CommandLine><ApplicationPath>Games/NES/mixed.zip</ApplicationPath><Name>Mixed</Name><GameID>mixed</GameID></AdditionalApplication>
+  <AdditionalApplication><GameID>mixed</GameID><Name>Mixed</Name><ApplicationPath>Games/NES/mixed.zip</ApplicationPath><CommandLine>-b</CommandLine></AdditionalApplication>
+</LaunchBox>
