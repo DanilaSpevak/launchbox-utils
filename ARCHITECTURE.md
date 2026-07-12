@@ -52,6 +52,7 @@ launchbox_tools/
 - `xml_repository.py` owns LaunchBox XML reading helpers.
 - `runtime_checks.py` owns pre-mutation safety checks for LaunchBox process state and XML file locks.
 - `safe_write.py` owns backup and safe XML replacement behavior.
+- `mutation_manifest.py` writes the final apply manifest independently from user reports.
 - `config.py` owns `launchbox_utils.ini` parsing and saving.
 
 ## Configuration
@@ -118,7 +119,9 @@ Any operation that modifies LaunchBox XML must follow these rules:
 
 Multi-file mutations use the shared transaction executor in `safe_write.py`: plan and validate all serialized XML, back up every destination, stage and parse every temporary file, then commit with atomic replacement. Each destination in a transaction receives a numbered backup subdirectory (`0001`, `0002`, and so on), so files with the same basename cannot overwrite each other's backups. If a later commit fails, already committed files are restored from backup in reverse order.
 
-`replace-paths` treats all changed XML files as one transaction. Additional Apps dedupe treats each platform XML as an independent transaction, so one failed platform does not undo successful changes to another platform. Mutation runs expose `dry_run`, `success`, `partial`, `failed`, or `rolled_back`; `applied` is set only after a confirmed commit and never for a rolled-back transaction.
+`replace-paths` treats all changed XML files as one transaction. Additional Apps dedupe treats each platform XML as an independent transaction, so one failed platform does not undo successful changes to another platform. Mutation runs expose `dry_run`, `success`, `partial`, `failed`, or `rolled_back`.
+
+`MutationState` is the only source of truth for individual files and changes: `planned` before preparation, `prepared` after backup/stage validation, `committed` after atomic replacement, `failed` for a failed file step, and `rolled_back` after successful restoration. A final `manifest.json` in the apply backup root records the run outcome, file states, backup paths, diagnostics, and operation-specific changes. Manifest writer failures are reported separately and never rewrite the known XML mutation state.
 
 Use `safe_write.py` for backup and safe replacement rather than writing XML directly.
 
@@ -172,6 +175,8 @@ path_replacements.csv
 ```
 
 The `--only-with-findings` mode should avoid creating detail files for clean platforms and remove stale generated detail files where appropriate.
+
+Mutation CSV/TXT reports use `state`, not an independent `applied` flag, and repeat the manifest path or manifest error so CLI, GUI, reports, and recovery metadata describe the same result.
 
 ## GUI Notes
 

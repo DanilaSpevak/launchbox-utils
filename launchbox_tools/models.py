@@ -15,6 +15,23 @@ class MutationOutcome(str, Enum):
     ROLLED_BACK = "rolled_back"
 
 
+class MutationState(str, Enum):
+    PLANNED = "planned"
+    PREPARED = "prepared"
+    COMMITTED = "committed"
+    FAILED = "failed"
+    ROLLED_BACK = "rolled_back"
+
+
+@dataclass
+class MutationFileResult:
+    path: Path
+    state: MutationState = MutationState.PLANNED
+    backup_path: Path | None = None
+    error: str | None = None
+    rollback_error: str | None = None
+
+
 T = TypeVar("T")
 
 
@@ -24,6 +41,9 @@ class MutationRunResult(Generic[T]):
     outcome: MutationOutcome
     error: str | None = None
     rollback_errors: list[str] = field(default_factory=list)
+    files: list[MutationFileResult] = field(default_factory=list)
+    manifest_path: Path | None = None
+    manifest_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +81,8 @@ class AdditionalApplicationDuplicate:
     kept: GameEntry
     duplicate: GameEntry
     key: tuple[str, str]
+    state: MutationState = MutationState.PLANNED
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -78,7 +100,7 @@ class AdditionalAppsDedupeResult:
     ambiguities: list[AdditionalApplicationAmbiguity] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     backup_path: Path | None = None
-    applied: bool = False
+    state: MutationState | None = None
     error: str | None = None
 
 
@@ -90,7 +112,7 @@ class PathReplacement:
     title: str
     old_value: str
     new_value: str
-    applied: bool = False
+    state: MutationState = MutationState.PLANNED
     error: str | None = None
 
 
@@ -100,5 +122,4 @@ class PathReplacementResult:
     replacements: list[PathReplacement] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     backup_paths: list[Path] = field(default_factory=list)
-    applied: bool = False
     error: str | None = None

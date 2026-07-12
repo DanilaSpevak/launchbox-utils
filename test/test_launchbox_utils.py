@@ -1,4 +1,5 @@
 import csv
+import json
 import sys
 import tempfile
 import unittest
@@ -25,12 +26,17 @@ from launchbox_tools.operations.audit import audit_platform
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
 from launchbox_tools.operations.path_replacement import build_replacement_value, run_path_replacement
 from launchbox_tools.runtime_checks import MutationBlockedError, ensure_safe_to_mutate, is_file_locked
-from launchbox_tools.models import MutationOutcome, MutationRunResult
+from launchbox_tools.models import (
+    MutationFileResult,
+    MutationOutcome,
+    MutationRunResult,
+    MutationState,
+)
 from launchbox_tools.paths import safe_report_dir_name
 from launchbox_tools.reports.audit_reports import write_reports
 from launchbox_tools.reports.dedupe_reports import write_dedupe_reports
 from launchbox_tools.reports.path_replacement_reports import write_path_replacement_reports
-from launchbox_tools.safe_write import XmlMutation, execute_xml_transaction
+from launchbox_tools.safe_write import XmlMutation, XmlTransactionResult, execute_xml_transaction
 from launchbox_tools.xml_repository import child_text, load_platforms, local_name, parse_xml
 
 
@@ -70,6 +76,10 @@ class LaunchBoxAuditTests(unittest.TestCase):
                     )
 
             self.assertEqual(transaction.outcome, MutationOutcome.ROLLED_BACK, transaction)
+            self.assertEqual(
+                [result.state for result in transaction.files],
+                [MutationState.ROLLED_BACK, MutationState.FAILED],
+            )
             self.assertEqual(first.read_bytes(), originals[first])
             self.assertEqual(second.read_bytes(), originals[second])
             self.assertEqual(len(transaction.backup_paths), 2)
@@ -105,6 +115,8 @@ class LaunchBoxAuditTests(unittest.TestCase):
                         )
 
             self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(transaction.files[0].state, MutationState.FAILED)
+            self.assertEqual(transaction.files[1].state, MutationState.FAILED)
             self.assertEqual(len(transaction.rollback_errors), 1, transaction)
             self.assertIn(str(first), transaction.rollback_errors[0])
             self.assertTrue(all(path.exists() for path in transaction.backup_paths.values()))
@@ -203,9 +215,63 @@ class LaunchBoxAuditTests(unittest.TestCase):
                     )
 
             self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(transaction.files[0].state, MutationState.FAILED)
             self.assertEqual(destination.read_bytes(), original)
             self.assertEqual(len(transaction.backup_paths), 1)
             self.assertFalse(list(root.glob("*.stage.tmp")))
+
+    def test_xml_transaction_keeps_prepared_state_when_precommit_check_fails(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+
+            with patch(
+                "launchbox_tools.safe_write.ensure_safe_to_mutate",
+                side_effect=[None, None, OSError("precommit denied")],
+            ):
+                transaction = execute_xml_transaction(
+                    [XmlMutation(destination, tree)], root / "Backups"
+                )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(transaction.files[0].state, MutationState.PREPARED)
+            self.assertEqual(child_text(parse_xml(destination), "Value"), "old")
+            self.assertFalse(list(root.glob("*.stage.tmp")))
+
+    def test_xml_transaction_keeps_unattempted_files_prepared_after_late_commit_failure(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            paths = [root / f"database-{index}.xml" for index in range(3)]
+            trees = []
+            for index, path in enumerate(paths):
+                path.write_text(f"<Root><Value>{index}</Value></Root>", encoding="utf-8")
+                tree = ET.parse(path)
+                tree.getroot().find("Value").text = f"changed-{index}"
+                trees.append(tree)
+            commit_calls = 0
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated second commit failure")
+                stage_path.replace(destination)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write._commit_staged_file", side_effect=fail_second_commit):
+                    transaction = execute_xml_transaction(
+                        [XmlMutation(path, tree) for path, tree in zip(paths, trees)],
+                        root / "Backups",
+                    )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.ROLLED_BACK)
+            self.assertEqual(
+                [file.state for file in transaction.files],
+                [MutationState.ROLLED_BACK, MutationState.FAILED, MutationState.PREPARED],
+            )
 
     def write_platforms_xml(self, root: Path, folder: str = "Games/NES") -> None:
         (root / "Data" / "Platforms.xml").write_text(
@@ -504,8 +570,32 @@ language = fr
         self.assertIn("резервной копии", translate("ru", "dedupe_apply_tooltip"))
         self.assertEqual(translate("ru", "outcome_partial"), "Выполнено частично")
         self.assertEqual(translate("en", "outcome_rolled_back"), "Rolled back")
+        self.assertEqual(translate("ru", "state_committed"), "Зафиксировано XML-файлов")
         self.assertIn("LaunchBox", translate("ru", "mutation_blocked_launchbox"))
         self.assertEqual(translate("missing", "audit_group"), "Audit")
+
+    def test_gui_mutation_summary_logs_every_state_and_manifest_error(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        messages: list[str] = []
+        app.enqueue_log = messages.append
+        app.t = lambda key: translate("en", key)
+        run_result = MutationRunResult(
+            [],
+            MutationOutcome.SUCCESS,
+            files=[
+                MutationFileResult(Path("planned.xml"), MutationState.PLANNED),
+                MutationFileResult(Path("committed.xml"), MutationState.COMMITTED),
+            ],
+            manifest_error="manifest denied",
+        )
+
+        app.log_mutation_state_summary(run_result)
+
+        self.assertIn("Planned XML files: 1", messages)
+        self.assertIn("Committed XML files: 1", messages)
+        self.assertIn("Manifest error: manifest denied", messages)
 
     def test_gui_language_button_toggles_and_saves_language(self) -> None:
         import tkinter as tk
@@ -595,6 +685,19 @@ language = fr
 
         self.assertEqual(exit_code, 1)
 
+    def test_cli_returns_nonzero_for_manifest_error_without_changing_success_outcome(self) -> None:
+        config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
+        run_result = MutationRunResult([], MutationOutcome.SUCCESS, manifest_error="manifest denied")
+
+        with patch("launchbox_tools.cli.load_app_config", return_value=config):
+            with patch("launchbox_tools.cli.run_additional_apps_dedupe", return_value=run_result):
+                with patch("launchbox_tools.cli.write_dedupe_reports"):
+                    with patch("builtins.print"):
+                        exit_code = main(["dedupe-additional-apps", "--apply"])
+
+        self.assertEqual(run_result.outcome, MutationOutcome.SUCCESS)
+        self.assertEqual(exit_code, 1)
+
     def test_resolve_command_uses_gui_for_packaged_gui_exe_without_args(self) -> None:
         parser = build_arg_parser()
         args = parser.parse_args([])
@@ -678,7 +781,14 @@ language = fr
             self.assertEqual(results.outcome, MutationOutcome.DRY_RUN)
             self.assertEqual(sum(len(result.replacements) for result in results.results), 2)
             self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
-            self.assertFalse(any(result.applied for result in results.results))
+            self.assertTrue(all(file.state == MutationState.PLANNED for file in results.files))
+            self.assertTrue(
+                all(
+                    replacement.state == MutationState.PLANNED
+                    for result in results.results
+                    for replacement in result.replacements
+                )
+            )
 
     def test_path_replacement_apply_updates_entries_platform_folder_and_creates_backups(self) -> None:
         with self.make_root() as temp_dir:
@@ -708,7 +818,56 @@ language = fr
             self.assertEqual(results.outcome, MutationOutcome.SUCCESS)
             self.assertEqual(sum(len(result.replacements) for result in results.results), 3)
             self.assertTrue(any(result.backup_paths for result in results.results))
-            self.assertTrue(any(result.applied for result in results.results))
+            self.assertTrue(all(file.state == MutationState.COMMITTED for file in results.files))
+            self.assertTrue(results.manifest_path.is_file())
+            manifest = json.loads(results.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "success")
+            self.assertEqual({item["state"] for item in manifest["files"]}, {"committed"})
+            self.assertEqual({item["state"] for item in manifest["changes"]}, {"committed"})
+
+    def test_path_replacement_apply_without_changes_still_writes_manifest(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                run_result = run_path_replacement(
+                    root,
+                    root / "Games" / "Missing",
+                    root / "Games" / "New",
+                    apply_changes=True,
+                )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.SUCCESS)
+            self.assertEqual(run_result.files, [])
+            self.assertTrue(run_result.manifest_path.is_file())
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["files"], [])
+            self.assertEqual(manifest["changes"], [])
+
+    def test_manifest_write_failure_does_not_change_committed_mutation_state(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch(
+                    "launchbox_tools.mutation_manifest.Path.write_text",
+                    side_effect=OSError("manifest denied"),
+                ):
+                    run_result = run_path_replacement(
+                        root,
+                        root / "Games" / "NES",
+                        root / "Games" / "SNES",
+                        apply_changes=True,
+                    )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.SUCCESS)
+            self.assertTrue(all(file.state == MutationState.COMMITTED for file in run_result.files))
+            self.assertEqual(run_result.manifest_error, "manifest denied")
+            self.assertIsNone(run_result.manifest_path)
 
     def test_path_replacement_rolls_back_all_xml_after_late_commit_failure(self) -> None:
         with self.make_root() as temp_dir:
@@ -739,11 +898,24 @@ language = fr
             self.assertEqual(run_result.outcome, MutationOutcome.ROLLED_BACK)
             self.assertEqual(platforms_xml.read_bytes(), originals[platforms_xml])
             self.assertEqual(games_xml.read_bytes(), originals[games_xml])
-            self.assertFalse(any(result.applied for result in run_result.results))
+            self.assertEqual(
+                {file.state for file in run_result.files},
+                {MutationState.ROLLED_BACK, MutationState.FAILED},
+            )
             self.assertFalse(
-                any(replacement.applied for result in run_result.results for replacement in result.replacements)
+                any(
+                    replacement.state == MutationState.COMMITTED
+                    for result in run_result.results
+                    for replacement in result.replacements
+                )
             )
             self.assertTrue(any(result.backup_paths for result in run_result.results))
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "rolled_back")
+            self.assertEqual(
+                {item["state"] for item in manifest["files"]},
+                {"rolled_back", "failed"},
+            )
 
     def test_path_replacement_rolls_back_platforms_xml_name_collision(self) -> None:
         with self.make_root() as temp_dir:
@@ -785,9 +957,16 @@ language = fr
             self.assertEqual(run_result.outcome, MutationOutcome.ROLLED_BACK)
             self.assertEqual(platforms_xml.read_bytes(), originals[platforms_xml])
             self.assertEqual(platform_xml.read_bytes(), originals[platform_xml])
-            self.assertFalse(any(result.applied for result in run_result.results))
+            self.assertEqual(
+                {file.state for file in run_result.files},
+                {MutationState.ROLLED_BACK, MutationState.FAILED},
+            )
             self.assertFalse(
-                any(replacement.applied for result in run_result.results for replacement in result.replacements)
+                any(
+                    replacement.state == MutationState.COMMITTED
+                    for result in run_result.results
+                    for replacement in result.replacements
+                )
             )
             backup_paths = [path for result in run_result.results for path in result.backup_paths]
             self.assertEqual(len(backup_paths), 2)
@@ -844,7 +1023,13 @@ language = fr
             detail_text = (output_dir / "Nintendo Entertainment System" / "path_replacements.txt").read_text(encoding="utf-8")
             self.assertIn("dry-run", summary_text)
             self.assertIn("outcome", summary_text)
+            self.assertIn("state", summary_text)
+            self.assertNotIn("applied", summary_text.casefold())
+            rows = list(csv.DictReader(summary_text.splitlines()[1:], delimiter=";"))
+            self.assertTrue(rows)
+            self.assertEqual(rows[0]["state"], "planned")
             self.assertIn("Outcome: dry_run", detail_text)
+            self.assertIn("State: planned", detail_text)
             self.assertIn("Games/NES/game.zip", detail_text)
             self.assertIn("Games/SNES/game.zip", detail_text)
 
@@ -975,6 +1160,11 @@ language = fr
             summary_text = (output_dir / "duplicate_additional_apps.csv").read_text(encoding="utf-8-sig")
             self.assertTrue(summary_text.startswith("sep=;\n"))
             self.assertIn("outcome", summary_text)
+            self.assertIn("state", summary_text)
+            self.assertNotIn("applied", summary_text.casefold())
+            rows = list(csv.DictReader(summary_text.splitlines()[1:], delimiter=";"))
+            self.assertTrue(rows)
+            self.assertEqual(rows[0]["state"], "planned")
             self.assertIn("Keep this version", summary_text)
 
     def test_dedupe_additional_apps_apply_removes_duplicates_and_creates_backup(self) -> None:
@@ -1004,9 +1194,14 @@ language = fr
                 results = run_additional_apps_dedupe(root, apply_changes=True)
 
             self.assertEqual(results.outcome, MutationOutcome.SUCCESS)
-            self.assertTrue(results.results[0].applied)
+            self.assertEqual(results.results[0].state, MutationState.COMMITTED)
+            self.assertTrue(all(duplicate.state == MutationState.COMMITTED for duplicate in results.results[0].duplicates))
             self.assertIsNotNone(results.results[0].backup_path)
             self.assertTrue(results.results[0].backup_path.exists())
+            manifest = json.loads(results.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["operation"], "dedupe_additional_apps")
+            self.assertEqual(manifest["outcome"], "success")
+            self.assertEqual(manifest["changes"][0]["state"], "committed")
 
             xml_root = parse_xml(root / "Data" / "Platforms" / "Nintendo Entertainment System.xml")
             additional_apps = [element for element in xml_root if local_name(element.tag) == "AdditionalApplication"]
@@ -1014,6 +1209,45 @@ language = fr
             self.assertEqual(len(additional_apps), 2)
             self.assertIn("Keep this version", names)
             self.assertIn("Keep different game", names)
+
+    def test_dedupe_propagates_rolled_back_file_state_to_duplicates_and_manifest(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                self.duplicate_additional_app_xml(
+                    "game-1", "Keep", "Remove", "Games/NES/duplicate.zip"
+                ),
+            )
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            backup_path = root / "Data" / "Backups" / "fake.xml"
+            transaction = XmlTransactionResult(
+                MutationOutcome.ROLLED_BACK,
+                {xml_path.resolve(strict=False): backup_path},
+                "simulated commit failure",
+                files=[
+                    MutationFileResult(
+                        xml_path.resolve(strict=False),
+                        MutationState.ROLLED_BACK,
+                        backup_path,
+                    )
+                ],
+            )
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch(
+                    "launchbox_tools.operations.dedupe_additional_apps.execute_xml_transaction",
+                    return_value=transaction,
+                ):
+                    run_result = run_additional_apps_dedupe(root, apply_changes=True)
+
+            self.assertEqual(run_result.outcome, MutationOutcome.ROLLED_BACK)
+            self.assertEqual(run_result.results[0].state, MutationState.ROLLED_BACK)
+            self.assertEqual(run_result.results[0].duplicates[0].state, MutationState.ROLLED_BACK)
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "rolled_back")
+            self.assertEqual(manifest["changes"][0]["state"], "rolled_back")
 
     def test_conservative_dedupe_fixture_dry_run_reports_duplicates_and_ambiguities(self) -> None:
         with self.make_root() as temp_dir:
@@ -1081,7 +1315,7 @@ language = fr
                 result = run_result.results[0]
 
             remaining = [element for element in parse_xml(xml_path) if local_name(element.tag) == "AdditionalApplication"]
-            self.assertTrue(result.applied)
+            self.assertEqual(result.state, MutationState.COMMITTED)
             self.assertIsNotNone(result.backup_path)
             self.assertTrue(result.backup_path.exists())
             self.assertEqual(len(result.duplicates), 3)
@@ -1187,7 +1421,7 @@ language = fr
                 results = run_additional_apps_dedupe(root, apply_changes=False)
 
             self.assertEqual(len(results.results[0].duplicates), 1)
-            self.assertFalse(results.results[0].applied)
+            self.assertEqual(results.results[0].state, MutationState.PLANNED)
 
     def test_is_file_locked_returns_false_for_unlocked_file(self) -> None:
         with self.make_root() as temp_dir:
@@ -1238,10 +1472,16 @@ language = fr
 
             self.assertEqual(results.outcome, MutationOutcome.PARTIAL)
             self.assertEqual(len(results.results), 2)
-            self.assertTrue(results.results[0].applied)
+            self.assertEqual(results.results[0].state, MutationState.COMMITTED)
             self.assertIsNone(results.results[0].error)
-            self.assertFalse(results.results[1].applied)
+            self.assertEqual(results.results[1].state, MutationState.FAILED)
             self.assertEqual(results.results[1].error, "simulated write failure")
+            manifest = json.loads(results.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "partial")
+            self.assertEqual(
+                {item["state"] for item in manifest["files"]},
+                {"committed", "failed"},
+            )
 
             nes_xml = parse_xml(root / "Data" / "Platforms" / "Nintendo Entertainment System.xml")
             nes_names = [child_text(element, "Name") for element in nes_xml if local_name(element.tag) == "AdditionalApplication"]

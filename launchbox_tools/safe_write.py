@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .models import MutationOutcome, PlatformInfo
+from .models import MutationFileResult, MutationOutcome, MutationState, PlatformInfo
 from .runtime_checks import ensure_safe_to_mutate
 
 
@@ -43,24 +43,7 @@ class XmlTransactionResult:
     backup_paths: dict[Path, Path] = field(default_factory=dict)
     error: str | None = None
     rollback_errors: list[str] = field(default_factory=list)
-
-
-def _serialize_and_validate(mutations: list[XmlMutation]) -> dict[Path, bytes]:
-    serialized: dict[Path, bytes] = {}
-    seen: set[Path] = set()
-    for mutation in mutations:
-        destination = mutation.destination.resolve(strict=False)
-        if destination in seen:
-            raise ValueError(f"Duplicate XML transaction destination: {destination}")
-        if not destination.is_file():
-            raise FileNotFoundError(f"XML transaction destination not found: {destination}")
-        seen.add(destination)
-        buffer = io.BytesIO()
-        mutation.tree.write(buffer, encoding="utf-8", xml_declaration=True)
-        payload = buffer.getvalue()
-        ET.fromstring(payload)
-        serialized[destination] = payload
-    return serialized
+    files: list[MutationFileResult] = field(default_factory=list)
 
 
 def _commit_staged_file(stage_path: Path, destination: Path) -> None:
@@ -81,9 +64,30 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
     stage_paths: dict[Path, Path] = {}
     rollback_paths: set[Path] = set()
     committed: list[Path] = []
+    files = [MutationFileResult(mutation.destination.resolve(strict=False)) for mutation in mutations]
+    files_by_path = {result.path: result for result in files}
 
     try:
-        serialized = _serialize_and_validate(mutations)
+        serialized: dict[Path, bytes] = {}
+        seen: set[Path] = set()
+        for mutation, file_result in zip(mutations, files):
+            destination = file_result.path
+            try:
+                if destination in seen:
+                    raise ValueError(f"Duplicate XML transaction destination: {destination}")
+                if not destination.is_file():
+                    raise FileNotFoundError(f"XML transaction destination not found: {destination}")
+                seen.add(destination)
+                buffer = io.BytesIO()
+                mutation.tree.write(buffer, encoding="utf-8", xml_declaration=True)
+                payload = buffer.getvalue()
+                ET.fromstring(payload)
+                serialized[destination] = payload
+            except Exception as exc:
+                file_result.state = MutationState.FAILED
+                file_result.error = str(exc)
+                return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
+
         destinations = list(serialized)
         backup_roots = {
             destination: backup_root / f"{index:04d}"
@@ -94,8 +98,12 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
         try:
             for destination in destinations:
                 backups[destination] = backup_xml_file(destination, backup_roots[destination])
+                files_by_path[destination].backup_path = backups[destination]
         except Exception as exc:
-            return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc))
+            file_result = files_by_path[destination]
+            file_result.state = MutationState.FAILED
+            file_result.error = str(exc)
+            return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
 
         try:
             for destination, payload in serialized.items():
@@ -103,29 +111,45 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
                 stage_paths[destination] = stage_path
                 stage_path.write_bytes(payload)
                 ET.parse(stage_path)
+                files_by_path[destination].state = MutationState.PREPARED
         except Exception as exc:
-            return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc))
+            file_result = files_by_path[destination]
+            file_result.state = MutationState.FAILED
+            file_result.error = str(exc)
+            return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
 
-        ensure_safe_to_mutate(destinations)
+        try:
+            ensure_safe_to_mutate(destinations)
+        except Exception as exc:
+            return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
+
         try:
             for destination in destinations:
                 _commit_staged_file(stage_paths[destination], destination)
                 committed.append(destination)
+                files_by_path[destination].state = MutationState.COMMITTED
         except Exception as exc:
+            failed_result = files_by_path[destination]
+            failed_result.state = MutationState.FAILED
+            failed_result.error = str(exc)
             rollback_errors: list[str] = []
             for destination in reversed(committed):
                 rollback_path = destination.with_name(f"{destination.name}.rollback.tmp")
                 rollback_paths.add(rollback_path)
                 try:
                     _restore_backup(backups[destination], destination, rollback_path)
+                    files_by_path[destination].state = MutationState.ROLLED_BACK
                 except Exception as rollback_exc:
-                    rollback_errors.append(f"{destination}: {rollback_exc}")
+                    message = f"{destination}: {rollback_exc}"
+                    rollback_errors.append(message)
+                    files_by_path[destination].state = MutationState.FAILED
+                    files_by_path[destination].rollback_error = str(rollback_exc)
             outcome = MutationOutcome.FAILED if rollback_errors or not committed else MutationOutcome.ROLLED_BACK
-            return XmlTransactionResult(outcome, backups, str(exc), rollback_errors)
+            return XmlTransactionResult(outcome, backups, str(exc), rollback_errors, files)
 
-        return XmlTransactionResult(MutationOutcome.SUCCESS, backups)
+        return XmlTransactionResult(MutationOutcome.SUCCESS, backups, files=files)
     except Exception as exc:
-        return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc))
+        return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
     finally:
         for path in [*stage_paths.values(), *rollback_paths]:
             try:

@@ -5,7 +5,16 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-from ..models import MutationOutcome, MutationRunResult, PathReplacement, PathReplacementResult, PlatformInfo
+from ..models import (
+    MutationFileResult,
+    MutationOutcome,
+    MutationRunResult,
+    MutationState,
+    PathReplacement,
+    PathReplacementResult,
+    PlatformInfo,
+)
+from ..mutation_manifest import write_mutation_manifest
 from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import XmlMutation, execute_xml_transaction
@@ -93,7 +102,7 @@ def _append_replacement(
         title=title,
         old_value=source_value,
         new_value=new_value or "",
-        applied=False,
+        state=MutationState.FAILED if error else MutationState.PLANNED,
         error=error,
     )
     result.replacements.append(replacement)
@@ -267,11 +276,38 @@ def run_path_replacement(
         for error in ([result.error] if result.error else [])
         + [replacement.error for replacement in result.replacements if replacement.error]
     ]
+    planned_files_by_path: dict[Path, MutationFileResult] = {}
+    for result in results:
+        for replacement in result.replacements:
+            path = replacement.xml_path.resolve(strict=False)
+            file_result = planned_files_by_path.setdefault(path, MutationFileResult(path))
+            if replacement.error:
+                file_result.state = MutationState.FAILED
+                file_result.error = replacement.error
+        if result.error:
+            path = result.platform.database_xml.resolve(strict=False)
+            file_result = planned_files_by_path.setdefault(path, MutationFileResult(path))
+            file_result.state = MutationState.FAILED
+            file_result.error = result.error
+
+    planned_files = list(planned_files_by_path.values())
+    for result in results:
+        for replacement in result.replacements:
+            replacement.state = planned_files_by_path[replacement.xml_path.resolve(strict=False)].state
+
     if planning_errors:
-        return MutationRunResult(results, MutationOutcome.FAILED, " | ".join(planning_errors))
+        run_result = MutationRunResult(
+            results,
+            MutationOutcome.FAILED,
+            " | ".join(planning_errors),
+            files=planned_files,
+        )
+        if apply_changes:
+            _write_path_replacement_manifest(run_result, backup_root)
+        return run_result
 
     if not apply_changes:
-        return MutationRunResult(results, MutationOutcome.DRY_RUN)
+        return MutationRunResult(results, MutationOutcome.DRY_RUN, files=planned_files)
 
     mutations: list[XmlMutation] = []
     if platforms_changed:
@@ -282,22 +318,48 @@ def run_path_replacement(
         if changed
     )
     transaction = execute_xml_transaction(mutations, backup_root)
+    transaction_files_by_path = {file_result.path: file_result for file_result in transaction.files}
 
     for result in results:
         relevant_paths = {replacement.xml_path.resolve(strict=False) for replacement in result.replacements}
         result.backup_paths = [
             backup for destination, backup in transaction.backup_paths.items() if destination in relevant_paths
         ]
-        if transaction.outcome == MutationOutcome.SUCCESS:
-            for replacement in result.replacements:
-                replacement.applied = True
-            result.applied = bool(result.replacements)
-        elif result.replacements:
+        for replacement in result.replacements:
+            file_result = transaction_files_by_path.get(replacement.xml_path.resolve(strict=False))
+            if file_result is not None:
+                replacement.state = file_result.state
+        if transaction.outcome != MutationOutcome.SUCCESS and result.replacements:
             result.error = transaction.error
 
-    return MutationRunResult(
+    run_result = MutationRunResult(
         results,
         transaction.outcome,
         transaction.error,
         transaction.rollback_errors,
+        transaction.files,
     )
+    _write_path_replacement_manifest(run_result, backup_root)
+    return run_result
+
+
+def _write_path_replacement_manifest(
+    run_result: MutationRunResult[PathReplacementResult],
+    backup_root: Path,
+) -> None:
+    changes = [
+        {
+            "type": "path_replacement",
+            "platform": result.platform.name,
+            "xml_path": str(replacement.xml_path),
+            "entry_type": replacement.entry_type,
+            "title": replacement.title,
+            "old_value": replacement.old_value,
+            "new_value": replacement.new_value,
+            "state": replacement.state.value,
+            "error": replacement.error or result.error,
+        }
+        for result in run_result.results
+        for replacement in result.replacements
+    ]
+    write_mutation_manifest(run_result, backup_root, "replace_paths", changes)

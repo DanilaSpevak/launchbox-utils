@@ -19,6 +19,7 @@ from ..config import (
     save_interface_language,
     save_raw_path_config,
 )
+from ..models import MutationRunResult, MutationState
 from ..operations.audit import run_audit
 from ..operations.dedupe_additional_apps import run_additional_apps_dedupe
 from ..operations.path_replacement import run_path_replacement
@@ -741,6 +742,15 @@ class LaunchBoxUtilsApp:
             message = str(exc)
         messagebox.showerror(self.t("mutation_blocked_title"), message)
 
+    def log_mutation_state_summary(self, run_result: MutationRunResult[object]) -> None:
+        for state in MutationState:
+            count = sum(1 for file_result in run_result.files if file_result.state == state)
+            self.enqueue_log(f"{self.t(f'state_{state.value}')}: {count}")
+        if run_result.manifest_path:
+            self.enqueue_log(f"{self.t('manifest')}: {run_result.manifest_path}")
+        if run_result.manifest_error:
+            self.enqueue_log(f"{self.t('manifest_error')}: {run_result.manifest_error}")
+
     def run_dedupe_operation(self, apply_changes: bool) -> None:
         paths = self.validate_paths()
         if paths is None:
@@ -770,7 +780,11 @@ class LaunchBoxUtilsApp:
                 self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
                 self.enqueue_log(f"{self.t('duplicates')}: {sum(len(result.duplicates) for result in results)}")
                 self.enqueue_log(f"{self.t('ambiguities')}: {sum(len(result.ambiguities) for result in results)}")
-                self.enqueue_log(f"{self.t('changed_files')}: {sum(1 for result in results if result.applied)}")
+                self.enqueue_log(
+                    f"{self.t('changed_files')}: "
+                    f"{sum(1 for file_result in run_result.files if file_result.state == MutationState.COMMITTED)}"
+                )
+                self.log_mutation_state_summary(run_result)
                 self.enqueue_log(f"{self.t('warnings')}: {sum(len(result.warnings) for result in results)}")
                 failed_results = [result for result in results if result.error]
                 if failed_results:
@@ -780,7 +794,7 @@ class LaunchBoxUtilsApp:
                 for rollback_error in run_result.rollback_errors:
                     self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
                 self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
-                if run_result.outcome.value in {"dry_run", "success"}:
+                if run_result.outcome.value in {"dry_run", "success"} and not run_result.manifest_error:
                     self.enqueue_log(self.t("finished"))
                 else:
                     self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))
@@ -835,7 +849,11 @@ class LaunchBoxUtilsApp:
                 self.enqueue_log(f"{self.t('outcome')}: {self.t(f'outcome_{run_result.outcome.value}')}")
                 self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
                 self.enqueue_log(f"{self.t('path_replacements')}: {sum(len(result.replacements) for result in results)}")
-                self.enqueue_log(f"{self.t('changed_files')}: {len({path for result in results for path in result.backup_paths})}")
+                self.enqueue_log(
+                    f"{self.t('changed_files')}: "
+                    f"{sum(1 for file_result in run_result.files if file_result.state == MutationState.COMMITTED)}"
+                )
+                self.log_mutation_state_summary(run_result)
                 self.enqueue_log(f"{self.t('warnings')}: {sum(len(result.warnings) for result in results)}")
                 failed_results = [result for result in results if result.error]
                 if failed_results:
@@ -845,7 +863,7 @@ class LaunchBoxUtilsApp:
                 for rollback_error in run_result.rollback_errors:
                     self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
                 self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
-                if run_result.outcome.value in {"dry_run", "success"}:
+                if run_result.outcome.value in {"dry_run", "success"} and not run_result.manifest_error:
                     self.enqueue_log(self.t("finished"))
                 else:
                     self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))

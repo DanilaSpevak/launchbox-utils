@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -9,10 +10,13 @@ from ..models import (
     AdditionalApplicationDuplicate,
     AdditionalAppsDedupeResult,
     GameEntry,
+    MutationFileResult,
     MutationOutcome,
     MutationRunResult,
+    MutationState,
     PlatformInfo,
 )
+from ..mutation_manifest import write_mutation_manifest
 from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import XmlMutation, execute_xml_transaction
@@ -172,11 +176,11 @@ def dedupe_additional_apps_for_platform(
     root: Path,
     apply_changes: bool,
     backup_root: Path,
-) -> tuple[AdditionalAppsDedupeResult, MutationOutcome, list[str]]:
+) -> tuple[AdditionalAppsDedupeResult, MutationOutcome, list[str], list[MutationFileResult]]:
     result = AdditionalAppsDedupeResult(platform=platform)
     if not platform.database_xml.exists():
         result.warnings.append(f"Platform XML not found: {platform.database_xml}")
-        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, []
+        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, [], []
 
     tree = parse_xml_tree(platform.database_xml)
     entries, warnings = load_application_entries(platform, root, tree.getroot(), include_xml_links=True)
@@ -186,9 +190,17 @@ def dedupe_additional_apps_for_platform(
     result.ambiguities = ambiguities
     result.warnings.extend(dedupe_warnings)
 
+    if duplicates:
+        result.state = MutationState.PLANNED
+
     if not apply_changes or not duplicates:
         result.warnings.sort()
-        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, []
+        files = (
+            [MutationFileResult(platform.database_xml.resolve(strict=False))]
+            if duplicates
+            else []
+        )
+        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, [], files
 
     removable_duplicates = [
         duplicate
@@ -197,11 +209,21 @@ def dedupe_additional_apps_for_platform(
     ]
     skipped_count = len(duplicates) - len(removable_duplicates)
     if skipped_count:
-        result.warnings.append(f"Skipped {skipped_count} duplicate(s) because XML parent could not be determined")
-
-    if not removable_duplicates:
+        error = f"Could not prepare {skipped_count} duplicate(s) because XML parent could not be determined"
+        result.warnings.append(error)
+        result.duplicates = [
+            replace(duplicate, state=MutationState.FAILED, error=error)
+            for duplicate in duplicates
+        ]
+        result.error = error
+        result.state = MutationState.FAILED
         result.warnings.sort()
-        return result, MutationOutcome.SUCCESS, []
+        file_result = MutationFileResult(
+            platform.database_xml.resolve(strict=False),
+            state=MutationState.FAILED,
+            error=error,
+        )
+        return result, MutationOutcome.FAILED, [], [file_result]
 
     for duplicate in removable_duplicates:
         duplicate.duplicate.parent.remove(duplicate.duplicate.element)
@@ -209,9 +231,11 @@ def dedupe_additional_apps_for_platform(
     transaction = execute_xml_transaction([XmlMutation(platform.database_xml, tree)], backup_root)
     result.backup_path = transaction.backup_paths.get(platform.database_xml.resolve(strict=False))
     result.error = transaction.error
-    result.applied = transaction.outcome == MutationOutcome.SUCCESS
+    if transaction.files:
+        result.state = transaction.files[0].state
+        result.duplicates = [replace(duplicate, state=result.state) for duplicate in result.duplicates]
     result.warnings.sort()
-    return result, transaction.outcome, transaction.rollback_errors
+    return result, transaction.outcome, transaction.rollback_errors, transaction.files
 
 
 def run_additional_apps_dedupe(
@@ -233,22 +257,37 @@ def run_additional_apps_dedupe(
     results: list[AdditionalAppsDedupeResult] = []
     outcomes: list[MutationOutcome] = []
     rollback_errors: list[str] = []
+    file_results: list[MutationFileResult] = []
     for platform in platforms:
         try:
-            result, outcome, platform_rollback_errors = dedupe_additional_apps_for_platform(
+            result, outcome, platform_rollback_errors, platform_files = dedupe_additional_apps_for_platform(
                 platform, root, apply_changes, backup_root
             )
             results.append(result)
             outcomes.append(outcome)
             rollback_errors.extend(platform_rollback_errors)
+            file_results.extend(platform_files)
         except (ET.ParseError, OSError) as exc:
-            results.append(AdditionalAppsDedupeResult(platform=platform, error=str(exc)))
+            results.append(
+                AdditionalAppsDedupeResult(
+                    platform=platform,
+                    state=MutationState.FAILED,
+                    error=str(exc),
+                )
+            )
             outcomes.append(MutationOutcome.FAILED)
+            file_results.append(
+                MutationFileResult(
+                    platform.database_xml.resolve(strict=False),
+                    state=MutationState.FAILED,
+                    error=str(exc),
+                )
+            )
 
     if not apply_changes:
         outcome = MutationOutcome.FAILED if MutationOutcome.FAILED in outcomes else MutationOutcome.DRY_RUN
     else:
-        committed_count = sum(1 for result in results if result.applied)
+        committed_count = sum(1 for result in file_results if result.state == MutationState.COMMITTED)
         unsuccessful = any(item in {MutationOutcome.FAILED, MutationOutcome.ROLLED_BACK} for item in outcomes)
         if committed_count and unsuccessful:
             outcome = MutationOutcome.PARTIAL
@@ -260,4 +299,27 @@ def run_additional_apps_dedupe(
             outcome = MutationOutcome.SUCCESS
 
     errors = [result.error for result in results if result.error]
-    return MutationRunResult(results, outcome, " | ".join(errors) or None, rollback_errors)
+    run_result = MutationRunResult(
+        results,
+        outcome,
+        " | ".join(errors) or None,
+        rollback_errors,
+        file_results,
+    )
+    if apply_changes:
+        changes = [
+            {
+                "type": "additional_application_dedupe",
+                "platform": result.platform.name,
+                "xml_path": str(result.platform.database_xml),
+                "game_id": duplicate.duplicate.game_id,
+                "title": duplicate.duplicate.title,
+                "application_path": duplicate.duplicate.application_path,
+                "state": duplicate.state.value,
+                "error": duplicate.error,
+            }
+            for result in results
+            for duplicate in result.duplicates
+        ]
+        write_mutation_manifest(run_result, backup_root, "dedupe_additional_apps", changes)
+    return run_result

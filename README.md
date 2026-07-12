@@ -282,6 +282,10 @@ On successful `--apply`, the utility:
 
 Each platform XML is committed independently. If some files are committed and another fails, the operation reports `partial`; failed files remain unchanged or are restored from backup. CLI exits with code 1 for `partial`, `failed`, and `rolled_back` outcomes.
 
+Every planned XML change has an explicit state: `planned` in dry-run, `prepared` after backup and staged XML validation, `committed` only after atomic replacement, `failed` when a step for that file fails, and `rolled_back` after a committed file is restored. `applied` is not emitted as a separate flag.
+
+Each apply run writes a final `manifest.json` under its timestamped backup directory. It records the overall outcome, every affected XML file, backup paths, errors, and the state of each duplicate removal. If the XML commit succeeds but the manifest cannot be written, the mutation remains `success`, the manifest error is reported separately, and CLI exits with code 1.
+
 Dry-run and audit do not perform these checks — they only read the database.
 
 ### Deduplication reports
@@ -291,8 +295,8 @@ Dry-run and audit do not perform these checks — they only read the database.
 <output_dir>\<PlatformName>\duplicate_additional_apps.txt
 ```
 
-- `duplicate_additional_apps.csv` — summary table with `duplicate` and `ambiguous` finding types (UTF-8 with BOM encoding, `;` delimiter, first line `sep=;` for Excel).
-- `duplicate_additional_apps.txt` — per-platform details: which canonical duplicates can be removed and which ambiguous variants must be kept.
+- `duplicate_additional_apps.csv` — summary table with `duplicate` and `ambiguous` finding types plus the mutation `state` (UTF-8 with BOM encoding, `;` delimiter, first line `sep=;` for Excel).
+- `duplicate_additional_apps.txt` — per-platform details: which canonical duplicates can be removed, their states, and which ambiguous variants must be kept.
 
 Review dry-run reports before apply.
 
@@ -321,7 +325,9 @@ python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --
 python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --only-with-findings
 ```
 
-Before apply, the same LaunchBox process and XML lock checks are performed as for deduplication. All affected XML files form one transaction: every document is validated, backed up, and staged before commit. Each XML backup is stored in its own numbered subdirectory under `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>`. If a later replacement fails, already replaced files are restored from the matching backup and the operation reports `rolled_back` instead of marking replacements as applied.
+Before apply, the same LaunchBox process and XML lock checks are performed as for deduplication. All affected XML files form one transaction: every document is validated, backed up, and staged before commit. Each XML backup is stored in its own numbered subdirectory under `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>`. If a later replacement fails, already replaced files are restored from the matching backup and the operation reports `rolled_back`; restored replacements have state `rolled_back`, the failing file has state `failed`, and files not yet committed remain `prepared`.
+
+Apply also writes `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>\manifest.json`, including runs that find no changes.
 
 Reports:
 
@@ -330,8 +336,8 @@ Reports:
 <output_dir>\<PlatformName>\path_replacements.txt
 ```
 
-- `path_replacements.csv` — summary table with old/new values, entry type, XML path, mode, backup path, errors, and warnings.
-- `path_replacements.txt` — per-platform details for every planned or applied replacement.
+- `path_replacements.csv` — summary table with old/new values, entry type, XML path, mode, mutation state, backup path, manifest details, errors, and warnings.
+- `path_replacements.txt` — per-platform details and state for every planned, prepared, committed, failed, or rolled-back replacement.
 
 ## Main CLI commands
 
@@ -681,6 +687,10 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 
 XML каждой платформы фиксируется независимо. Если часть файлов записана, а другой файл завершился ошибкой, операция возвращает `partial`; неуспешные файлы остаются без изменений или восстанавливаются из backup. Для `partial`, `failed` и `rolled_back` CLI завершается с кодом 1.
 
+Каждое изменение XML имеет явное состояние: `planned` в dry-run, `prepared` после создания backup и проверки staged XML, `committed` только после atomic replace, `failed` при ошибке шага и `rolled_back` после успешного восстановления уже записанного файла. Отдельный флаг `applied` больше не используется.
+
+После каждого apply в timestamp-каталоге backup создаётся итоговый `manifest.json` с outcome операции, состояниями XML и отдельных удалений, путями backup и ошибками. Ошибка записи manifest показывается отдельно, не изменяет фактический outcome XML-мутации и приводит к CLI exit code 1.
+
 Dry-run и аудит эти проверки не выполняют — они только читают базу.
 
 ### Отчёты по дедупликации
@@ -690,8 +700,8 @@ Dry-run и аудит эти проверки не выполняют — они
 <output_dir>\<PlatformName>\duplicate_additional_apps.txt
 ```
 
-- `duplicate_additional_apps.csv` — сводная таблица с типами находок `duplicate` и `ambiguous` (кодировка UTF-8 с BOM, разделитель `;`, первая строка `sep=;` для Excel).
-- `duplicate_additional_apps.txt` — детали по платформе: какие канонические дубли можно удалить и какие ambiguous-варианты необходимо оставить.
+- `duplicate_additional_apps.csv` — сводная таблица с типами находок `duplicate` и `ambiguous` и состоянием мутации `state` (кодировка UTF-8 с BOM, разделитель `;`, первая строка `sep=;` для Excel).
+- `duplicate_additional_apps.txt` — детали по платформе: какие канонические дубли можно удалить, их состояния и какие ambiguous-варианты необходимо оставить.
 
 Перед apply рекомендуется просмотреть отчёты dry-run.
 

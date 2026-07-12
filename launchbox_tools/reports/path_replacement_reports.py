@@ -51,8 +51,10 @@ def write_path_replacement_reports(
                     "title",
                     "old_value",
                     "new_value",
-                    "applied",
+                    "state",
                     "backup_paths",
+                    "manifest_path",
+                    "manifest_error",
                     "error",
                     "rollback_errors",
                     "warnings",
@@ -71,8 +73,10 @@ def write_path_replacement_reports(
                                 replacement.title,
                                 replacement.old_value,
                                 replacement.new_value,
-                                replacement.applied,
+                                replacement.state.value,
                                 " | ".join(str(path) for path in result.backup_paths),
+                                run_result.manifest_path or "",
+                                run_result.manifest_error or "",
                                 replacement.error or result.error or "",
                                 " | ".join(run_result.rollback_errors),
                                 " | ".join(result.warnings),
@@ -89,8 +93,10 @@ def write_path_replacement_reports(
                             "",
                             "",
                             "",
-                            result.applied,
+                            "",
                             " | ".join(str(path) for path in result.backup_paths),
+                            run_result.manifest_path or "",
+                            run_result.manifest_error or "",
                             result.error or "",
                             " | ".join(run_result.rollback_errors),
                             " | ".join(result.warnings),
@@ -118,7 +124,10 @@ def write_path_replacement_reports(
             file.write(f"=== {result.platform.name} ===\n")
             file.write(f"Mode: {mode}\n")
             file.write(f"Outcome: {run_result.outcome.value}\n")
-            file.write(f"Applied: {result.applied}\n")
+            if run_result.manifest_path:
+                file.write(f"Manifest: {run_result.manifest_path}\n")
+            if run_result.manifest_error:
+                file.write(f"Manifest error: {run_result.manifest_error}\n")
             if result.backup_paths:
                 file.write("Backups:\n")
                 for backup_path in result.backup_paths:
@@ -140,7 +149,7 @@ def write_path_replacement_reports(
                 file.write(f"    XML: {replacement.xml_path}\n")
                 file.write(f"    Old: {replacement.old_value}\n")
                 file.write(f"    New: {replacement.new_value}\n")
-                file.write(f"    Applied: {replacement.applied}\n")
+                file.write(f"    State: {replacement.state.value}\n")
                 if replacement.error:
                     file.write(f"    Error: {replacement.error}\n")
                 file.write("\n")

@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .config import ConfigError, DEFAULT_CONFIG_PATH, load_app_config, resolve_config_path
-from .models import MutationOutcome
+from .models import MutationOutcome, MutationRunResult, MutationState
 from .runtime_checks import MutationBlockedError
 from .operations.audit import run_audit
 from .operations.dedupe_additional_apps import run_additional_apps_dedupe
@@ -32,6 +32,16 @@ def _has_no_user_args(argv: list[str] | None) -> bool:
     if argv is not None:
         return len(argv) == 0
     return len(sys.argv) <= 1
+
+
+def _print_mutation_state_summary(run_result: MutationRunResult[object]) -> None:
+    for state in MutationState:
+        count = sum(1 for file_result in run_result.files if file_result.state == state)
+        print(f"XML files {state.value}: {count}")
+    if run_result.manifest_path:
+        print(f"Manifest: {run_result.manifest_path}")
+    if run_result.manifest_error:
+        print(f"Manifest error: {run_result.manifest_error}", file=sys.stderr)
 
 
 def _resolve_command(
@@ -168,7 +178,9 @@ def main(argv: list[str] | None = None) -> int:
     elif command == "dedupe-additional-apps":
         duplicate_count = sum(len(result.duplicates) for result in results)
         ambiguous_count = sum(len(result.ambiguities) for result in results)
-        changed_count = sum(1 for result in results if result.applied)
+        changed_count = sum(
+            1 for file_result in mutation_run.files if file_result.state == MutationState.COMMITTED
+        )
         warning_count = sum(len(result.warnings) for result in results)
         failed_results = [result for result in results if result.error]
         mode = "apply" if args.apply else "dry-run"
@@ -179,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Duplicate AdditionalApplication entries: {duplicate_count}")
         print(f"Ambiguous AdditionalApplication groups: {ambiguous_count}")
         print(f"Changed platform XML files: {changed_count}")
+        _print_mutation_state_summary(mutation_run)
         print(f"Warnings: {warning_count}")
         if failed_results:
             print(f"Failed platforms: {len(failed_results)}", file=sys.stderr)
@@ -188,7 +201,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Rollback error: {rollback_error}", file=sys.stderr)
     else:
         replacement_count = sum(len(result.replacements) for result in results)
-        changed_count = len({path for result in results for path in result.backup_paths})
+        changed_count = sum(
+            1 for file_result in mutation_run.files if file_result.state == MutationState.COMMITTED
+        )
         warning_count = sum(len(result.warnings) for result in results)
         failed_results = [result for result in results if result.error]
         mode = "apply" if args.apply else "dry-run"
@@ -198,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Processed platforms: {len(results)}")
         print(f"Path replacements: {replacement_count}")
         print(f"Changed XML files/platforms: {changed_count}")
+        _print_mutation_state_summary(mutation_run)
         print(f"Warnings: {warning_count}")
         if failed_results:
             print(f"Failed platforms: {len(failed_results)}", file=sys.stderr)
@@ -211,6 +227,8 @@ def main(argv: list[str] | None = None) -> int:
         MutationOutcome.FAILED,
         MutationOutcome.ROLLED_BACK,
     }:
+        return _finish(1)
+    if command in {"dedupe-additional-apps", "replace-paths"} and mutation_run.manifest_error:
         return _finish(1)
     return _finish(0)
 
