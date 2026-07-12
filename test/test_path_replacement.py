@@ -1,0 +1,296 @@
+import json
+from pathlib import Path
+from unittest.mock import patch
+from launchbox_tools.operations.path_replacement import build_replacement_value, run_path_replacement
+from launchbox_tools.models import MutationOutcome, MutationState
+from launchbox_tools.xml_repository import child_text, local_name, parse_xml
+
+from test.support import LaunchBoxTestCase
+
+
+class PathReplacementTests(LaunchBoxTestCase):
+    def test_build_replacement_value_preserves_absolute_paths(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            old_path = root / "OldRoms"
+            new_path = root / "NewRoms"
+
+            new_value, error = build_replacement_value(root, old_path, new_path, str(old_path / "NES" / "game.zip"))
+
+            self.assertIsNone(error)
+            self.assertEqual(new_value, str(new_path / "NES" / "game.zip"))
+
+    def test_build_replacement_value_preserves_relative_paths_and_forward_slashes(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+
+            new_value, error = build_replacement_value(
+                root,
+                root / "Games" / "NES",
+                root / "Games" / "SNES",
+                "Games/NES/game.zip",
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(new_value, "Games/SNES/game.zip")
+
+    def test_build_replacement_value_does_not_match_similar_prefix(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+
+            new_value, error = build_replacement_value(
+                root,
+                root / "Games" / "ROM",
+                root / "Games" / "NewROM",
+                "Games/ROMs/game.zip",
+            )
+
+            self.assertIsNone(new_value)
+            self.assertIsNone(error)
+
+    def test_path_replacement_dry_run_reports_without_changing_xml(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            before = xml_path.read_text(encoding="utf-8")
+
+            results = run_path_replacement(root, root / "Games" / "NES", root / "Games" / "SNES")
+
+            self.assertEqual(results.outcome, MutationOutcome.DRY_RUN)
+            self.assertEqual(sum(len(result.replacements) for result in results.results), 2)
+            self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
+            self.assertTrue(all(file.state == MutationState.PLANNED for file in results.files))
+            self.assertTrue(
+                all(
+                    replacement.state == MutationState.PLANNED
+                    for result in results.results
+                    for replacement in result.replacements
+                )
+            )
+
+    def test_path_replacement_apply_updates_entries_platform_folder_and_creates_backups(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                """  <Game>
+    <Title>Main Game</Title>
+    <ApplicationPath>Games/NES/main.zip</ApplicationPath>
+  </Game>
+  <AdditionalApplication>
+    <GameID>game-1</GameID>
+    <Name>Extra</Name>
+    <ApplicationPath>Games/NES/extra.zip</ApplicationPath>
+  </AdditionalApplication>""",
+            )
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                results = run_path_replacement(root, root / "Games" / "NES", root / "Games" / "SNES", apply_changes=True)
+
+            platforms_xml = parse_xml(root / "Data" / "Platforms.xml")
+            self.assertEqual(child_text(next(platforms_xml.iter("Platform")), "Folder"), "Games/SNES")
+            platform_xml = parse_xml(root / "Data" / "Platforms" / "Nintendo Entertainment System.xml")
+            paths = [child_text(element, "ApplicationPath") for element in platform_xml if local_name(element.tag) in {"Game", "AdditionalApplication"}]
+            self.assertEqual(paths, ["Games/SNES/main.zip", "Games/SNES/extra.zip"])
+            self.assertEqual(results.outcome, MutationOutcome.SUCCESS)
+            self.assertEqual(sum(len(result.replacements) for result in results.results), 3)
+            self.assertTrue(any(result.backup_paths for result in results.results))
+            self.assertTrue(all(file.state == MutationState.COMMITTED for file in results.files))
+            self.assertTrue(results.manifest_path.is_file())
+            manifest = json.loads(results.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "success")
+            self.assertEqual({item["state"] for item in manifest["files"]}, {"committed"})
+            self.assertEqual({item["state"] for item in manifest["changes"]}, {"committed"})
+
+    def test_path_replacement_apply_without_changes_still_writes_manifest(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                run_result = run_path_replacement(
+                    root,
+                    root / "Games" / "Missing",
+                    root / "Games" / "New",
+                    apply_changes=True,
+                )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.SUCCESS)
+            self.assertEqual(run_result.files, [])
+            self.assertTrue(run_result.manifest_path.is_file())
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["files"], [])
+            self.assertEqual(manifest["changes"], [])
+
+    def test_path_replacement_same_second_apply_uses_distinct_backup_roots(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            fixed_datetime = patch("launchbox_tools.operations.path_replacement.datetime")
+
+            with fixed_datetime as datetime_mock:
+                datetime_mock.now.return_value.strftime.return_value = "20260712-120000"
+                with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                    first = run_path_replacement(
+                        root,
+                        root / "Games" / "Missing",
+                        root / "Games" / "New",
+                        apply_changes=True,
+                    )
+                    first_manifest = first.manifest_path.read_text(encoding="utf-8")
+                    second = run_path_replacement(
+                        root,
+                        root / "Games" / "Missing",
+                        root / "Games" / "New",
+                        apply_changes=True,
+                    )
+
+            self.assertEqual(first.manifest_path.parent.name, "PathReplacement-20260712-120000")
+            self.assertEqual(second.manifest_path.parent.name, "PathReplacement-20260712-120000-2")
+            self.assertEqual(first.manifest_path.read_text(encoding="utf-8"), first_manifest)
+            self.assertTrue(second.manifest_path.is_file())
+
+    def test_path_replacement_rolls_back_all_xml_after_late_commit_failure(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            platforms_xml = root / "Data" / "Platforms.xml"
+            games_xml = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            originals = {platforms_xml: platforms_xml.read_bytes(), games_xml: games_xml.read_bytes()}
+            commit_calls = 0
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated late commit failure")
+                stage_path.replace(destination)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write._commit_staged_file", side_effect=fail_second_commit):
+                    run_result = run_path_replacement(
+                        root,
+                        root / "Games" / "NES",
+                        root / "Games" / "SNES",
+                        apply_changes=True,
+                    )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.ROLLED_BACK)
+            self.assertEqual(platforms_xml.read_bytes(), originals[platforms_xml])
+            self.assertEqual(games_xml.read_bytes(), originals[games_xml])
+            self.assertEqual(
+                {file.state for file in run_result.files},
+                {MutationState.ROLLED_BACK, MutationState.FAILED},
+            )
+            self.assertFalse(
+                any(
+                    replacement.state == MutationState.COMMITTED
+                    for result in run_result.results
+                    for replacement in result.replacements
+                )
+            )
+            self.assertTrue(any(result.backup_paths for result in run_result.results))
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "rolled_back")
+            self.assertEqual(
+                {item["state"] for item in manifest["files"]},
+                {"rolled_back", "failed"},
+            )
+
+    def test_path_replacement_rolls_back_platforms_xml_name_collision(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            platforms_xml = root / "Data" / "Platforms.xml"
+            platform_xml = root / "Data" / "Platforms" / "Platforms.xml"
+            platforms_xml.write_text(
+                "<ArrayOfPlatform><Platform><Name>Platforms</Name><Folder>Games/Old</Folder>"
+                "</Platform></ArrayOfPlatform>",
+                encoding="utf-8",
+            )
+            platform_xml.write_text(
+                "<LaunchBox><Game><Title>Game</Title><ApplicationPath>Games/Old/game.zip</ApplicationPath>"
+                "</Game></LaunchBox>",
+                encoding="utf-8",
+            )
+            originals = {
+                platforms_xml: platforms_xml.read_bytes(),
+                platform_xml: platform_xml.read_bytes(),
+            }
+            commit_calls = 0
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated second commit failure")
+                stage_path.replace(destination)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write._commit_staged_file", side_effect=fail_second_commit):
+                    run_result = run_path_replacement(
+                        root,
+                        root / "Games" / "Old",
+                        root / "Games" / "New",
+                        apply_changes=True,
+                    )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.ROLLED_BACK)
+            self.assertEqual(platforms_xml.read_bytes(), originals[platforms_xml])
+            self.assertEqual(platform_xml.read_bytes(), originals[platform_xml])
+            self.assertEqual(
+                {file.state for file in run_result.files},
+                {MutationState.ROLLED_BACK, MutationState.FAILED},
+            )
+            self.assertFalse(
+                any(
+                    replacement.state == MutationState.COMMITTED
+                    for result in run_result.results
+                    for replacement in result.replacements
+                )
+            )
+            backup_paths = [path for result in run_result.results for path in result.backup_paths]
+            self.assertEqual(len(backup_paths), 2)
+            self.assertEqual(len(set(backup_paths)), 2)
+            self.assertEqual({path.read_bytes() for path in backup_paths}, set(originals.values()))
+            self.assertFalse(list(root.rglob("*.stage.tmp")))
+            self.assertFalse(list(root.rglob("*.rollback.tmp")))
+
+    def test_path_replacement_can_filter_platform(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_two_platforms_xml(root)
+            self.write_platform_games_xml_raw(
+                root,
+                "Nintendo Entertainment System",
+                """  <Game>
+    <Title>NES Game</Title>
+    <ApplicationPath>Games/NES/game.zip</ApplicationPath>
+  </Game>""",
+            )
+            self.write_platform_games_xml_raw(
+                root,
+                "Sega Genesis",
+                """  <Game>
+    <Title>Genesis Game</Title>
+    <ApplicationPath>Games/Genesis/game.zip</ApplicationPath>
+  </Game>""",
+            )
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                results = run_path_replacement(
+                    root,
+                    root / "Games" / "NES",
+                    root / "Games" / "NewNES",
+                    platform_filter="Nintendo Entertainment System",
+                    apply_changes=True,
+                )
+
+            self.assertEqual(len(results.results), 1)
+            genesis_xml = parse_xml(root / "Data" / "Platforms" / "Sega Genesis.xml")
+            self.assertEqual(child_text(next(genesis_xml.iter("Game")), "ApplicationPath"), "Games/Genesis/game.zip")

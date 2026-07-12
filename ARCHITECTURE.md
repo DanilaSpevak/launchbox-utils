@@ -198,6 +198,8 @@ Recommended flow:
 4. Add report writing in `launchbox_tools/reports/<operation>_reports.py`.
 5. Add CLI wiring in `cli.py`.
 6. Add GUI controls in `gui/app.py` only as a thin wrapper.
-7. Add tests in `test/test_launchbox_utils.py` or split tests by operation when the file becomes too large.
+7. Add tests to the matching subsystem module under `test/` (for example,
+   `test_audit.py` or `test_safe_write.py`). Keep shared LaunchBox tree and XML
+   builders in `test/support.py`.
 
 For write operations, follow the safety rules above before exposing apply mode. Call `ensure_safe_to_mutate()` from the operation orchestrator and route writes through `safe_write.py`.
