@@ -85,11 +85,15 @@ def execute_xml_transaction(mutations: list[XmlMutation], backup_root: Path) -> 
     try:
         serialized = _serialize_and_validate(mutations)
         destinations = list(serialized)
+        backup_roots = {
+            destination: backup_root / f"{index:04d}"
+            for index, destination in enumerate(destinations, start=1)
+        }
         ensure_safe_to_mutate(destinations)
 
         try:
             for destination in destinations:
-                backups[destination] = backup_xml_file(destination, backup_root)
+                backups[destination] = backup_xml_file(destination, backup_roots[destination])
         except Exception as exc:
             return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc))
 

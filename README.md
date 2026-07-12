@@ -275,7 +275,7 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 
 On successful `--apply`, the utility:
 
-- creates XML backups in `<LaunchBox>\Data\Backups\AdditionalAppsDedupe-<timestamp>`;
+- creates XML backups in numbered subdirectories under `<LaunchBox>\Data\Backups\AdditionalAppsDedupe-<timestamp>`;
 - removes only duplicate `<AdditionalApplication>` entries;
 - does not remove `<Game>` entries;
 - writes XML to a temporary file, validates parsing, and only then replaces the original.
@@ -321,7 +321,7 @@ python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --
 python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --only-with-findings
 ```
 
-Before apply, the same LaunchBox process and XML lock checks are performed as for deduplication. All affected XML files form one transaction: every document is validated, backed up, and staged before commit. If a later replacement fails, already replaced files are restored from backup and the operation reports `rolled_back` instead of marking replacements as applied. Backups are stored in `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>`.
+Before apply, the same LaunchBox process and XML lock checks are performed as for deduplication. All affected XML files form one transaction: every document is validated, backed up, and staged before commit. Each XML backup is stored in its own numbered subdirectory under `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>`. If a later replacement fails, already replaced files are restored from the matching backup and the operation reports `rolled_back` instead of marking replacements as applied.
 
 Reports:
 
@@ -674,7 +674,7 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 
 При успешном `--apply` утилита:
 
-- создаёт резервные копии XML в `<LaunchBox>\Data\Backups\AdditionalAppsDedupe-<timestamp>`;
+- создаёт резервные копии XML в нумерованных подкаталогах `<LaunchBox>\Data\Backups\AdditionalAppsDedupe-<timestamp>`;
 - удаляет только дублирующие `<AdditionalApplication>`;
 - не удаляет `<Game>`;
 - записывает XML во временный файл, проверяет парсинг и только после этого заменяет оригинал.

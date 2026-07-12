@@ -116,7 +116,7 @@ Any operation that modifies LaunchBox XML must follow these rules:
 - The temporary XML must be parsed successfully before replacing the original file.
 - Only the intended XML elements should be changed.
 
-Multi-file mutations use the shared transaction executor in `safe_write.py`: plan and validate all serialized XML, back up every destination, stage and parse every temporary file, then commit with atomic replacement. If a later commit fails, already committed files are restored from backup in reverse order.
+Multi-file mutations use the shared transaction executor in `safe_write.py`: plan and validate all serialized XML, back up every destination, stage and parse every temporary file, then commit with atomic replacement. Each destination in a transaction receives a numbered backup subdirectory (`0001`, `0002`, and so on), so files with the same basename cannot overwrite each other's backups. If a later commit fails, already committed files are restored from backup in reverse order.
 
 `replace-paths` treats all changed XML files as one transaction. Additional Apps dedupe treats each platform XML as an independent transaction, so one failed platform does not undo successful changes to another platform. Mutation runs expose `dry_run`, `success`, `partial`, `failed`, or `rolled_back`; `applied` is set only after a confirmed commit and never for a rolled-back transaction.
 

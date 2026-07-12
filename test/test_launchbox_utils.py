@@ -109,6 +109,50 @@ class LaunchBoxAuditTests(unittest.TestCase):
             self.assertIn(str(first), transaction.rollback_errors[0])
             self.assertTrue(all(path.exists() for path in transaction.backup_paths.values()))
 
+    def test_xml_transaction_rolls_back_same_named_files_from_distinct_backups(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            first = root / "a" / "db.xml"
+            second = root / "b" / "db.xml"
+            first.parent.mkdir()
+            second.parent.mkdir()
+            first.write_text("<Root><Value>first</Value></Root>", encoding="utf-8")
+            second.write_text("<Root><Value>second</Value></Root>", encoding="utf-8")
+            originals = {first: first.read_bytes(), second: second.read_bytes()}
+            first_tree = ET.parse(first)
+            second_tree = ET.parse(second)
+            first_tree.getroot().find("Value").text = "changed-first"
+            second_tree.getroot().find("Value").text = "changed-second"
+            commit_calls = 0
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated second commit failure")
+                stage_path.replace(destination)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write._commit_staged_file", side_effect=fail_second_commit):
+                    transaction = execute_xml_transaction(
+                        [XmlMutation(first, first_tree), XmlMutation(second, second_tree)],
+                        root / "Backups",
+                    )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.ROLLED_BACK, transaction)
+            self.assertEqual(first.read_bytes(), originals[first])
+            self.assertEqual(second.read_bytes(), originals[second])
+            self.assertEqual(len(transaction.backup_paths), 2)
+            self.assertEqual(len(set(transaction.backup_paths.values())), 2)
+            self.assertEqual(
+                {backup_path.parent.name for backup_path in transaction.backup_paths.values()},
+                {"0001", "0002"},
+            )
+            for destination, backup_path in transaction.backup_paths.items():
+                self.assertEqual(backup_path.read_bytes(), originals[destination])
+            self.assertFalse(list(root.rglob("*.stage.tmp")))
+            self.assertFalse(list(root.rglob("*.rollback.tmp")))
+
     def test_xml_transaction_validation_failure_writes_nothing(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
@@ -700,6 +744,57 @@ language = fr
                 any(replacement.applied for result in run_result.results for replacement in result.replacements)
             )
             self.assertTrue(any(result.backup_paths for result in run_result.results))
+
+    def test_path_replacement_rolls_back_platforms_xml_name_collision(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            platforms_xml = root / "Data" / "Platforms.xml"
+            platform_xml = root / "Data" / "Platforms" / "Platforms.xml"
+            platforms_xml.write_text(
+                "<ArrayOfPlatform><Platform><Name>Platforms</Name><Folder>Games/Old</Folder>"
+                "</Platform></ArrayOfPlatform>",
+                encoding="utf-8",
+            )
+            platform_xml.write_text(
+                "<LaunchBox><Game><Title>Game</Title><ApplicationPath>Games/Old/game.zip</ApplicationPath>"
+                "</Game></LaunchBox>",
+                encoding="utf-8",
+            )
+            originals = {
+                platforms_xml: platforms_xml.read_bytes(),
+                platform_xml: platform_xml.read_bytes(),
+            }
+            commit_calls = 0
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated second commit failure")
+                stage_path.replace(destination)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write._commit_staged_file", side_effect=fail_second_commit):
+                    run_result = run_path_replacement(
+                        root,
+                        root / "Games" / "Old",
+                        root / "Games" / "New",
+                        apply_changes=True,
+                    )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.ROLLED_BACK)
+            self.assertEqual(platforms_xml.read_bytes(), originals[platforms_xml])
+            self.assertEqual(platform_xml.read_bytes(), originals[platform_xml])
+            self.assertFalse(any(result.applied for result in run_result.results))
+            self.assertFalse(
+                any(replacement.applied for result in run_result.results for replacement in result.replacements)
+            )
+            backup_paths = [path for result in run_result.results for path in result.backup_paths]
+            self.assertEqual(len(backup_paths), 2)
+            self.assertEqual(len(set(backup_paths)), 2)
+            self.assertEqual({path.read_bytes() for path in backup_paths}, set(originals.values()))
+            self.assertFalse(list(root.rglob("*.stage.tmp")))
+            self.assertFalse(list(root.rglob("*.rollback.tmp")))
 
     def test_path_replacement_can_filter_platform(self) -> None:
         with self.make_root() as temp_dir:
