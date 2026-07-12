@@ -762,9 +762,11 @@ class LaunchBoxUtilsApp:
 
         def worker() -> None:
             try:
-                results = run_additional_apps_dedupe(launchbox_root, apply_changes=apply_changes)
-                write_dedupe_reports(results, output_dir, apply_changes, only_with_findings)
+                run_result = run_additional_apps_dedupe(launchbox_root, apply_changes=apply_changes)
+                results = run_result.results
+                write_dedupe_reports(run_result, output_dir, apply_changes, only_with_findings)
                 self.enqueue_log(f"{self.t('dedupe_mode')}: {'apply' if apply_changes else 'dry-run'}")
+                self.enqueue_log(f"{self.t('outcome')}: {self.t(f'outcome_{run_result.outcome.value}')}")
                 self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
                 self.enqueue_log(f"{self.t('duplicates')}: {sum(len(result.duplicates) for result in results)}")
                 self.enqueue_log(f"{self.t('ambiguities')}: {sum(len(result.ambiguities) for result in results)}")
@@ -775,8 +777,13 @@ class LaunchBoxUtilsApp:
                     self.enqueue_log(f"{self.t('failed_platforms')}: {len(failed_results)}")
                     for result in failed_results:
                         self.enqueue_log(f"  {result.platform.name}: {result.error}")
+                for rollback_error in run_result.rollback_errors:
+                    self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
                 self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
-                self.enqueue_log(self.t("finished"))
+                if run_result.outcome.value in {"dry_run", "success"}:
+                    self.enqueue_log(self.t("finished"))
+                else:
+                    self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
 
@@ -821,9 +828,11 @@ class LaunchBoxUtilsApp:
 
         def worker() -> None:
             try:
-                results = run_path_replacement(launchbox_root, old_path, new_path, apply_changes=apply_changes)
-                write_path_replacement_reports(results, output_dir, apply_changes, only_with_findings)
+                run_result = run_path_replacement(launchbox_root, old_path, new_path, apply_changes=apply_changes)
+                results = run_result.results
+                write_path_replacement_reports(run_result, output_dir, apply_changes, only_with_findings)
                 self.enqueue_log(f"{self.t('path_replacement_mode')}: {'apply' if apply_changes else 'dry-run'}")
+                self.enqueue_log(f"{self.t('outcome')}: {self.t(f'outcome_{run_result.outcome.value}')}")
                 self.enqueue_log(f"{self.t('processed_platforms')}: {len(results)}")
                 self.enqueue_log(f"{self.t('path_replacements')}: {sum(len(result.replacements) for result in results)}")
                 self.enqueue_log(f"{self.t('changed_files')}: {len({path for result in results for path in result.backup_paths})}")
@@ -833,8 +842,13 @@ class LaunchBoxUtilsApp:
                     self.enqueue_log(f"{self.t('failed_platforms')}: {len(failed_results)}")
                     for result in failed_results:
                         self.enqueue_log(f"  {result.platform.name}: {result.error}")
+                for rollback_error in run_result.rollback_errors:
+                    self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
                 self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
-                self.enqueue_log(self.t("finished"))
+                if run_result.outcome.value in {"dry_run", "success"}:
+                    self.enqueue_log(self.t("finished"))
+                else:
+                    self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
 

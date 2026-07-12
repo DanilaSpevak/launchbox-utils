@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from ..models import AdditionalAppsDedupeResult
+from ..models import AdditionalAppsDedupeResult, MutationRunResult
 from ..paths import safe_report_dir_name
 
 
@@ -24,11 +24,12 @@ def cleanup_dedupe_detail_files(platform_dir: Path) -> None:
 
 
 def write_dedupe_reports(
-    results: list[AdditionalAppsDedupeResult],
+    run_result: MutationRunResult[AdditionalAppsDedupeResult],
     output_dir: Path,
     apply_changes: bool,
     only_with_findings: bool = False,
 ) -> None:
+    results = run_result.results
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_csv = output_dir / "duplicate_additional_apps.csv"
     mode = "apply" if apply_changes else "dry-run"
@@ -43,6 +44,7 @@ def write_dedupe_reports(
             writer.writerow(
                 [
                     "mode",
+                    "outcome",
                     "finding_type",
                     "platform",
                     "game_id",
@@ -53,6 +55,7 @@ def write_dedupe_reports(
                     "applied",
                     "backup_path",
                     "error",
+                    "rollback_errors",
                     "warnings",
                     "differing_fields",
                     "variant_count",
@@ -64,6 +67,7 @@ def write_dedupe_reports(
                         writer.writerow(
                             [
                                 mode,
+                                run_result.outcome.value,
                                 "duplicate",
                                 result.platform.name,
                                 duplicate.duplicate.game_id,
@@ -74,6 +78,7 @@ def write_dedupe_reports(
                                 result.applied,
                                 result.backup_path or "",
                                 result.error or "",
+                                " | ".join(run_result.rollback_errors),
                                 " | ".join(result.warnings),
                                 "",
                                 "",
@@ -84,6 +89,7 @@ def write_dedupe_reports(
                         writer.writerow(
                             [
                                 mode,
+                                run_result.outcome.value,
                                 "ambiguous",
                                 result.platform.name,
                                 variant.game_id,
@@ -94,6 +100,7 @@ def write_dedupe_reports(
                                 False,
                                 result.backup_path or "",
                                 result.error or "",
+                                " | ".join(run_result.rollback_errors),
                                 " | ".join(result.warnings),
                                 " | ".join(ambiguity.differing_fields),
                                 len(ambiguity.variants),
@@ -103,6 +110,7 @@ def write_dedupe_reports(
                     writer.writerow(
                         [
                             mode,
+                            run_result.outcome.value,
                             "",
                             result.platform.name,
                             "",
@@ -113,6 +121,7 @@ def write_dedupe_reports(
                             result.applied,
                             result.backup_path or "",
                             result.error or "",
+                            " | ".join(run_result.rollback_errors),
                             " | ".join(result.warnings),
                             "",
                             "",
@@ -139,11 +148,14 @@ def write_dedupe_reports(
         with (platform_dir / "duplicate_additional_apps.txt").open("w", encoding="utf-8", newline="\n") as file:
             file.write(f"=== {result.platform.name} ===\n")
             file.write(f"Mode: {mode}\n")
+            file.write(f"Outcome: {run_result.outcome.value}\n")
             file.write(f"Applied: {result.applied}\n")
             if result.backup_path:
                 file.write(f"Backup: {result.backup_path}\n")
             if result.error:
                 file.write(f"Error: {result.error}\n")
+            for rollback_error in run_result.rollback_errors:
+                file.write(f"Rollback error: {rollback_error}\n")
             if result.warnings:
                 file.write("Warnings:\n")
                 for warning in result.warnings:

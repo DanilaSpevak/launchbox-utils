@@ -5,10 +5,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-from ..models import PathReplacement, PathReplacementResult, PlatformInfo
+from ..models import MutationOutcome, MutationRunResult, PathReplacement, PathReplacementResult, PlatformInfo
 from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
-from ..safe_write import backup_xml_file, write_xml_tree_safely
+from ..safe_write import XmlMutation, execute_xml_transaction
 from ..xml_repository import child_text, load_platforms, local_name, parse_xml_tree
 
 
@@ -93,7 +93,7 @@ def _append_replacement(
         title=title,
         old_value=source_value,
         new_value=new_value or "",
-        applied=apply_changes and error is None,
+        applied=False,
         error=error,
     )
     result.replacements.append(replacement)
@@ -101,8 +101,7 @@ def _append_replacement(
         result.warnings.append(error)
         return False
 
-    if apply_changes:
-        target_element.text = new_value
+    target_element.text = new_value
     return True
 
 
@@ -208,7 +207,7 @@ def run_path_replacement(
     new_path: Path,
     platform_filter: str | None = None,
     apply_changes: bool = False,
-) -> list[PathReplacementResult]:
+) -> MutationRunResult[PathReplacementResult]:
     root = root.resolve(strict=False)
     old_path = old_path.expanduser().resolve(strict=False)
     new_path = new_path.expanduser().resolve(strict=False)
@@ -259,30 +258,46 @@ def run_path_replacement(
         except (ET.ParseError, OSError) as exc:
             result.error = str(exc)
 
-    if apply_changes and platforms_changed:
-        backup_path = backup_xml_file(platforms_xml, backup_root)
-        for result in results:
-            if any(replacement.xml_path == platforms_xml and replacement.applied for replacement in result.replacements):
-                result.backup_paths.append(backup_path)
-        write_xml_tree_safely(platforms_tree, platforms_xml)
-
-    if apply_changes:
-        for result, tree, changed in platform_trees:
-            if not changed:
-                continue
-            try:
-                backup_path = backup_xml_file(result.platform.database_xml, backup_root)
-                result.backup_paths.append(backup_path)
-                write_xml_tree_safely(tree, result.platform.database_xml)
-                result.applied = True
-            except (ET.ParseError, OSError) as exc:
-                result.error = str(exc)
-
-        if platforms_changed:
-            for result in results:
-                if any(replacement.xml_path == platforms_xml and replacement.applied for replacement in result.replacements):
-                    result.applied = True
-
     for result in results:
         result.warnings.sort()
-    return results
+
+    planning_errors = [
+        error
+        for result in results
+        for error in ([result.error] if result.error else [])
+        + [replacement.error for replacement in result.replacements if replacement.error]
+    ]
+    if planning_errors:
+        return MutationRunResult(results, MutationOutcome.FAILED, " | ".join(planning_errors))
+
+    if not apply_changes:
+        return MutationRunResult(results, MutationOutcome.DRY_RUN)
+
+    mutations: list[XmlMutation] = []
+    if platforms_changed:
+        mutations.append(XmlMutation(platforms_xml, platforms_tree))
+    mutations.extend(
+        XmlMutation(result.platform.database_xml, tree)
+        for result, tree, changed in platform_trees
+        if changed
+    )
+    transaction = execute_xml_transaction(mutations, backup_root)
+
+    for result in results:
+        relevant_paths = {replacement.xml_path.resolve(strict=False) for replacement in result.replacements}
+        result.backup_paths = [
+            backup for destination, backup in transaction.backup_paths.items() if destination in relevant_paths
+        ]
+        if transaction.outcome == MutationOutcome.SUCCESS:
+            for replacement in result.replacements:
+                replacement.applied = True
+            result.applied = bool(result.replacements)
+        elif result.replacements:
+            result.error = transaction.error
+
+    return MutationRunResult(
+        results,
+        transaction.outcome,
+        transaction.error,
+        transaction.rollback_errors,
+    )

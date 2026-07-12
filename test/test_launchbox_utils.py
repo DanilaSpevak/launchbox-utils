@@ -2,11 +2,13 @@ import csv
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
 from launchbox_tools.cli import _resolve_command, build_arg_parser, main
 from launchbox_tools.config import (
+    AppConfig,
     ConfigError,
     detect_default_language,
     load_app_config,
@@ -23,11 +25,12 @@ from launchbox_tools.operations.audit import audit_platform
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
 from launchbox_tools.operations.path_replacement import build_replacement_value, run_path_replacement
 from launchbox_tools.runtime_checks import MutationBlockedError, ensure_safe_to_mutate, is_file_locked
-from launchbox_tools.safe_write import write_xml_tree_safely as real_write_xml_tree_safely
+from launchbox_tools.models import MutationOutcome, MutationRunResult
 from launchbox_tools.paths import safe_report_dir_name
 from launchbox_tools.reports.audit_reports import write_reports
 from launchbox_tools.reports.dedupe_reports import write_dedupe_reports
 from launchbox_tools.reports.path_replacement_reports import write_path_replacement_reports
+from launchbox_tools.safe_write import XmlMutation, execute_xml_transaction
 from launchbox_tools.xml_repository import child_text, load_platforms, local_name, parse_xml
 
 
@@ -37,6 +40,128 @@ class LaunchBoxAuditTests(unittest.TestCase):
         root = Path(temp_dir.name)
         (root / "Data" / "Platforms").mkdir(parents=True)
         return temp_dir
+
+    def test_xml_transaction_rolls_back_already_committed_files(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            first = root / "first.xml"
+            second = root / "second.xml"
+            first.write_text("<Root><Value>first</Value></Root>", encoding="utf-8")
+            second.write_text("<Root><Value>second</Value></Root>", encoding="utf-8")
+            originals = {first: first.read_bytes(), second: second.read_bytes()}
+            first_tree = ET.parse(first)
+            second_tree = ET.parse(second)
+            first_tree.getroot().find("Value").text = "changed-first"
+            second_tree.getroot().find("Value").text = "changed-second"
+            commit_calls = 0
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated second commit failure")
+                stage_path.replace(destination)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write._commit_staged_file", side_effect=fail_second_commit):
+                    transaction = execute_xml_transaction(
+                        [XmlMutation(first, first_tree), XmlMutation(second, second_tree)],
+                        root / "Backups",
+                    )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.ROLLED_BACK, transaction)
+            self.assertEqual(first.read_bytes(), originals[first])
+            self.assertEqual(second.read_bytes(), originals[second])
+            self.assertEqual(len(transaction.backup_paths), 2)
+            self.assertFalse(list(root.glob("*.stage.tmp")))
+            self.assertFalse(list(root.glob("*.rollback.tmp")))
+
+    def test_xml_transaction_reports_rollback_failure(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            first = root / "first.xml"
+            second = root / "second.xml"
+            first.write_text("<Root><Value>first</Value></Root>", encoding="utf-8")
+            second.write_text("<Root><Value>second</Value></Root>", encoding="utf-8")
+            first_tree = ET.parse(first)
+            second_tree = ET.parse(second)
+            first_tree.getroot().find("Value").text = "changed-first"
+            second_tree.getroot().find("Value").text = "changed-second"
+            commit_calls = 0
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated commit failure")
+                stage_path.replace(destination)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write._commit_staged_file", side_effect=fail_second_commit):
+                    with patch("launchbox_tools.safe_write._restore_backup", side_effect=OSError("restore denied")):
+                        transaction = execute_xml_transaction(
+                            [XmlMutation(first, first_tree), XmlMutation(second, second_tree)],
+                            root / "Backups",
+                        )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(len(transaction.rollback_errors), 1, transaction)
+            self.assertIn(str(first), transaction.rollback_errors[0])
+            self.assertTrue(all(path.exists() for path in transaction.backup_paths.values()))
+
+    def test_xml_transaction_validation_failure_writes_nothing(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root />", encoding="utf-8")
+            original = destination.read_bytes()
+            invalid_tree = ET.ElementTree(ET.Element(None))
+            backup_root = root / "Backups"
+
+            transaction = execute_xml_transaction([XmlMutation(destination, invalid_tree)], backup_root)
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertFalse(backup_root.exists())
+
+    def test_xml_transaction_backup_failure_does_not_stage_or_commit(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            original = destination.read_bytes()
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write.backup_xml_file", side_effect=OSError("backup denied")):
+                    transaction = execute_xml_transaction(
+                        [XmlMutation(destination, tree)], root / "Backups"
+                    )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertFalse(list(root.glob("*.stage.tmp")))
+
+    def test_xml_transaction_stage_failure_does_not_commit(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            original = destination.read_bytes()
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("pathlib.Path.write_bytes", side_effect=OSError("stage denied")):
+                    transaction = execute_xml_transaction(
+                        [XmlMutation(destination, tree)], root / "Backups"
+                    )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertEqual(len(transaction.backup_paths), 1)
+            self.assertFalse(list(root.glob("*.stage.tmp")))
 
     def write_platforms_xml(self, root: Path, folder: str = "Games/NES") -> None:
         (root / "Data" / "Platforms.xml").write_text(
@@ -333,6 +458,8 @@ language = fr
             "Найти дубли дополнительных приложений и записать отчеты без изменения XML-файлов.",
         )
         self.assertIn("резервной копии", translate("ru", "dedupe_apply_tooltip"))
+        self.assertEqual(translate("ru", "outcome_partial"), "Выполнено частично")
+        self.assertEqual(translate("en", "outcome_rolled_back"), "Rolled back")
         self.assertIn("LaunchBox", translate("ru", "mutation_blocked_launchbox"))
         self.assertEqual(translate("missing", "audit_group"), "Audit")
 
@@ -411,6 +538,18 @@ language = fr
         self.assertEqual(args.new, r"D:\NewRoms")
         self.assertTrue(args.apply)
         self.assertEqual(args.platform, "NES")
+
+    def test_cli_returns_nonzero_for_partial_mutation_outcome(self) -> None:
+        config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
+        run_result = MutationRunResult([], MutationOutcome.PARTIAL)
+
+        with patch("launchbox_tools.cli.load_app_config", return_value=config):
+            with patch("launchbox_tools.cli.run_additional_apps_dedupe", return_value=run_result):
+                with patch("launchbox_tools.cli.write_dedupe_reports"):
+                    with patch("builtins.print"):
+                        exit_code = main(["dedupe-additional-apps", "--apply"])
+
+        self.assertEqual(exit_code, 1)
 
     def test_resolve_command_uses_gui_for_packaged_gui_exe_without_args(self) -> None:
         parser = build_arg_parser()
@@ -492,9 +631,10 @@ language = fr
 
             results = run_path_replacement(root, root / "Games" / "NES", root / "Games" / "SNES")
 
-            self.assertEqual(sum(len(result.replacements) for result in results), 2)
+            self.assertEqual(results.outcome, MutationOutcome.DRY_RUN)
+            self.assertEqual(sum(len(result.replacements) for result in results.results), 2)
             self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
-            self.assertFalse(any(result.applied for result in results))
+            self.assertFalse(any(result.applied for result in results.results))
 
     def test_path_replacement_apply_updates_entries_platform_folder_and_creates_backups(self) -> None:
         with self.make_root() as temp_dir:
@@ -521,9 +661,45 @@ language = fr
             platform_xml = parse_xml(root / "Data" / "Platforms" / "Nintendo Entertainment System.xml")
             paths = [child_text(element, "ApplicationPath") for element in platform_xml if local_name(element.tag) in {"Game", "AdditionalApplication"}]
             self.assertEqual(paths, ["Games/SNES/main.zip", "Games/SNES/extra.zip"])
-            self.assertEqual(sum(len(result.replacements) for result in results), 3)
-            self.assertTrue(any(result.backup_paths for result in results))
-            self.assertTrue(any(result.applied for result in results))
+            self.assertEqual(results.outcome, MutationOutcome.SUCCESS)
+            self.assertEqual(sum(len(result.replacements) for result in results.results), 3)
+            self.assertTrue(any(result.backup_paths for result in results.results))
+            self.assertTrue(any(result.applied for result in results.results))
+
+    def test_path_replacement_rolls_back_all_xml_after_late_commit_failure(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            platforms_xml = root / "Data" / "Platforms.xml"
+            games_xml = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            originals = {platforms_xml: platforms_xml.read_bytes(), games_xml: games_xml.read_bytes()}
+            commit_calls = 0
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated late commit failure")
+                stage_path.replace(destination)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch("launchbox_tools.safe_write._commit_staged_file", side_effect=fail_second_commit):
+                    run_result = run_path_replacement(
+                        root,
+                        root / "Games" / "NES",
+                        root / "Games" / "SNES",
+                        apply_changes=True,
+                    )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.ROLLED_BACK)
+            self.assertEqual(platforms_xml.read_bytes(), originals[platforms_xml])
+            self.assertEqual(games_xml.read_bytes(), originals[games_xml])
+            self.assertFalse(any(result.applied for result in run_result.results))
+            self.assertFalse(
+                any(replacement.applied for result in run_result.results for replacement in result.replacements)
+            )
+            self.assertTrue(any(result.backup_paths for result in run_result.results))
 
     def test_path_replacement_can_filter_platform(self) -> None:
         with self.make_root() as temp_dir:
@@ -555,7 +731,7 @@ language = fr
                     apply_changes=True,
                 )
 
-            self.assertEqual(len(results), 1)
+            self.assertEqual(len(results.results), 1)
             genesis_xml = parse_xml(root / "Data" / "Platforms" / "Sega Genesis.xml")
             self.assertEqual(child_text(next(genesis_xml.iter("Game")), "ApplicationPath"), "Games/Genesis/game.zip")
 
@@ -572,6 +748,8 @@ language = fr
             summary_text = (output_dir / "path_replacements.csv").read_text(encoding="utf-8-sig")
             detail_text = (output_dir / "Nintendo Entertainment System" / "path_replacements.txt").read_text(encoding="utf-8")
             self.assertIn("dry-run", summary_text)
+            self.assertIn("outcome", summary_text)
+            self.assertIn("Outcome: dry_run", detail_text)
             self.assertIn("Games/NES/game.zip", detail_text)
             self.assertIn("Games/SNES/game.zip", detail_text)
 
@@ -691,7 +869,8 @@ language = fr
 
             after = xml_path.read_text(encoding="utf-8")
             self.assertEqual(before, after)
-            self.assertEqual(len(results[0].duplicates), 1)
+            self.assertEqual(results.outcome, MutationOutcome.DRY_RUN)
+            self.assertEqual(len(results.results[0].duplicates), 1)
 
             platform_report = output_dir / "Nintendo Entertainment System" / "duplicate_additional_apps.txt"
             report_text = platform_report.read_text(encoding="utf-8")
@@ -700,6 +879,7 @@ language = fr
 
             summary_text = (output_dir / "duplicate_additional_apps.csv").read_text(encoding="utf-8-sig")
             self.assertTrue(summary_text.startswith("sep=;\n"))
+            self.assertIn("outcome", summary_text)
             self.assertIn("Keep this version", summary_text)
 
     def test_dedupe_additional_apps_apply_removes_duplicates_and_creates_backup(self) -> None:
@@ -728,9 +908,10 @@ language = fr
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
                 results = run_additional_apps_dedupe(root, apply_changes=True)
 
-            self.assertTrue(results[0].applied)
-            self.assertIsNotNone(results[0].backup_path)
-            self.assertTrue(results[0].backup_path.exists())
+            self.assertEqual(results.outcome, MutationOutcome.SUCCESS)
+            self.assertTrue(results.results[0].applied)
+            self.assertIsNotNone(results.results[0].backup_path)
+            self.assertTrue(results.results[0].backup_path.exists())
 
             xml_root = parse_xml(root / "Data" / "Platforms" / "Nintendo Entertainment System.xml")
             additional_apps = [element for element in xml_root if local_name(element.tag) == "AdditionalApplication"]
@@ -748,9 +929,10 @@ language = fr
             xml_path.write_text(fixture_path.read_text(encoding="utf-8"), encoding="utf-8")
             before = xml_path.read_text(encoding="utf-8")
 
-            result = run_additional_apps_dedupe(root, apply_changes=False)[0]
+            run_result = run_additional_apps_dedupe(root, apply_changes=False)
+            result = run_result.results[0]
             output_dir = root / "AuditReports"
-            write_dedupe_reports([result], output_dir, apply_changes=False)
+            write_dedupe_reports(run_result, output_dir, apply_changes=False)
 
             self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
             self.assertEqual(len(result.duplicates), 2)
@@ -777,7 +959,8 @@ language = fr
             xml_path.write_text(fixture_path.read_text(encoding="utf-8"), encoding="utf-8")
 
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
-                result = run_additional_apps_dedupe(root, apply_changes=True)[0]
+                run_result = run_additional_apps_dedupe(root, apply_changes=True)
+                result = run_result.results[0]
 
             remaining = [element for element in parse_xml(xml_path) if local_name(element.tag) == "AdditionalApplication"]
             self.assertTrue(result.applied)
@@ -845,8 +1028,8 @@ language = fr
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=True):
                 results = run_additional_apps_dedupe(root, apply_changes=False)
 
-            self.assertEqual(len(results[0].duplicates), 1)
-            self.assertFalse(results[0].applied)
+            self.assertEqual(len(results.results[0].duplicates), 1)
+            self.assertFalse(results.results[0].applied)
 
     def test_is_file_locked_returns_false_for_unlocked_file(self) -> None:
         with self.make_root() as temp_dir:
@@ -865,7 +1048,7 @@ language = fr
 
             results = run_additional_apps_dedupe(root, platform_filter="Missing Platform", apply_changes=False)
 
-            self.assertEqual(results, [])
+            self.assertEqual(results.results, [])
 
     def test_run_additional_apps_dedupe_continues_after_apply_failure(self) -> None:
         with self.make_root() as temp_dir:
@@ -884,22 +1067,23 @@ language = fr
 
             write_calls = 0
 
-            def flaky_write(tree, destination: Path) -> None:
+            def flaky_commit(stage_path: Path, destination: Path) -> None:
                 nonlocal write_calls
                 write_calls += 1
                 if write_calls == 2:
                     raise OSError("simulated write failure")
-                real_write_xml_tree_safely(tree, destination)
+                stage_path.replace(destination)
 
-            with patch("launchbox_tools.operations.dedupe_additional_apps.write_xml_tree_safely", side_effect=flaky_write):
+            with patch("launchbox_tools.safe_write._commit_staged_file", side_effect=flaky_commit):
                 with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
                     results = run_additional_apps_dedupe(root, apply_changes=True)
 
-            self.assertEqual(len(results), 2)
-            self.assertTrue(results[0].applied)
-            self.assertIsNone(results[0].error)
-            self.assertFalse(results[1].applied)
-            self.assertEqual(results[1].error, "simulated write failure")
+            self.assertEqual(results.outcome, MutationOutcome.PARTIAL)
+            self.assertEqual(len(results.results), 2)
+            self.assertTrue(results.results[0].applied)
+            self.assertIsNone(results.results[0].error)
+            self.assertFalse(results.results[1].applied)
+            self.assertEqual(results.results[1].error, "simulated write failure")
 
             nes_xml = parse_xml(root / "Data" / "Platforms" / "Nintendo Entertainment System.xml")
             nes_names = [child_text(element, "Name") for element in nes_xml if local_name(element.tag) == "AdditionalApplication"]

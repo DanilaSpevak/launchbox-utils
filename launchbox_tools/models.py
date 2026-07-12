@@ -2,7 +2,28 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
+from typing import Generic, TypeVar
+
+
+class MutationOutcome(str, Enum):
+    DRY_RUN = "dry_run"
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    ROLLED_BACK = "rolled_back"
+
+
+T = TypeVar("T")
+
+
+@dataclass
+class MutationRunResult(Generic[T]):
+    results: list[T]
+    outcome: MutationOutcome
+    error: str | None = None
+    rollback_errors: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

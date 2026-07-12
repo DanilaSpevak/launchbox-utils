@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .config import ConfigError, DEFAULT_CONFIG_PATH, load_app_config, resolve_config_path
+from .models import MutationOutcome
 from .runtime_checks import MutationBlockedError
 from .operations.audit import run_audit
 from .operations.dedupe_additional_apps import run_additional_apps_dedupe
@@ -126,15 +127,17 @@ def main(argv: list[str] | None = None) -> int:
             results = run_audit(root)
             write_reports(results, output_dir, only_with_findings)
         elif command == "dedupe-additional-apps":
-            results = run_additional_apps_dedupe(root, args.platform, args.apply)
-            write_dedupe_reports(results, output_dir, args.apply, only_with_findings)
+            mutation_run = run_additional_apps_dedupe(root, args.platform, args.apply)
+            results = mutation_run.results
+            write_dedupe_reports(mutation_run, output_dir, args.apply, only_with_findings)
         elif command == "replace-paths":
             old_path = Path(args.old).expanduser()
             new_path = Path(args.new).expanduser()
             if not old_path.is_absolute() or not new_path.is_absolute():
                 parser.error("replace-paths requires absolute --old and --new paths")
-            results = run_path_replacement(root, old_path, new_path, args.platform, args.apply)
-            write_path_replacement_reports(results, output_dir, args.apply, only_with_findings)
+            mutation_run = run_path_replacement(root, old_path, new_path, args.platform, args.apply)
+            results = mutation_run.results
+            write_path_replacement_reports(mutation_run, output_dir, args.apply, only_with_findings)
         else:
             parser.error(f"Unknown command: {command}")
     except FileNotFoundError as exc:
@@ -171,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         mode = "apply" if args.apply else "dry-run"
 
         print(f"Dedupe mode: {mode}")
+        print(f"Outcome: {mutation_run.outcome.value}")
         print(f"Processed platforms: {len(results)}")
         print(f"Duplicate AdditionalApplication entries: {duplicate_count}")
         print(f"Ambiguous AdditionalApplication groups: {ambiguous_count}")
@@ -180,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Failed platforms: {len(failed_results)}", file=sys.stderr)
             for result in failed_results:
                 print(f"  {result.platform.name}: {result.error}", file=sys.stderr)
+        for rollback_error in mutation_run.rollback_errors:
+            print(f"Rollback error: {rollback_error}", file=sys.stderr)
     else:
         replacement_count = sum(len(result.replacements) for result in results)
         changed_count = len({path for result in results for path in result.backup_paths})
@@ -188,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         mode = "apply" if args.apply else "dry-run"
 
         print(f"Path replacement mode: {mode}")
+        print(f"Outcome: {mutation_run.outcome.value}")
         print(f"Processed platforms: {len(results)}")
         print(f"Path replacements: {replacement_count}")
         print(f"Changed XML files/platforms: {changed_count}")
@@ -196,8 +203,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Failed platforms: {len(failed_results)}", file=sys.stderr)
             for result in failed_results:
                 print(f"  {result.platform.name}: {result.error}", file=sys.stderr)
+        for rollback_error in mutation_run.rollback_errors:
+            print(f"Rollback error: {rollback_error}", file=sys.stderr)
     print(f"Reports written to: {output_dir}")
-    if command in {"dedupe-additional-apps", "replace-paths"} and any(result.error for result in results):
+    if command in {"dedupe-additional-apps", "replace-paths"} and mutation_run.outcome in {
+        MutationOutcome.PARTIAL,
+        MutationOutcome.FAILED,
+        MutationOutcome.ROLLED_BACK,
+    }:
         return _finish(1)
     return _finish(0)
 

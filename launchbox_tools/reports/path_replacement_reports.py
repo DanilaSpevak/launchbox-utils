@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from ..models import PathReplacementResult
+from ..models import MutationRunResult, PathReplacementResult
 from ..paths import safe_report_dir_name
 
 
@@ -24,11 +24,12 @@ def cleanup_path_replacement_detail_files(platform_dir: Path) -> None:
 
 
 def write_path_replacement_reports(
-    results: list[PathReplacementResult],
+    run_result: MutationRunResult[PathReplacementResult],
     output_dir: Path,
     apply_changes: bool,
     only_with_findings: bool = False,
 ) -> None:
+    results = run_result.results
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_csv = output_dir / "path_replacements.csv"
     mode = "apply" if apply_changes else "dry-run"
@@ -43,6 +44,7 @@ def write_path_replacement_reports(
             writer.writerow(
                 [
                     "mode",
+                    "outcome",
                     "platform",
                     "xml_path",
                     "entry_type",
@@ -52,6 +54,7 @@ def write_path_replacement_reports(
                     "applied",
                     "backup_paths",
                     "error",
+                    "rollback_errors",
                     "warnings",
                 ]
             )
@@ -61,6 +64,7 @@ def write_path_replacement_reports(
                         writer.writerow(
                             [
                                 mode,
+                                run_result.outcome.value,
                                 result.platform.name,
                                 replacement.xml_path,
                                 replacement.entry_type,
@@ -70,6 +74,7 @@ def write_path_replacement_reports(
                                 replacement.applied,
                                 " | ".join(str(path) for path in result.backup_paths),
                                 replacement.error or result.error or "",
+                                " | ".join(run_result.rollback_errors),
                                 " | ".join(result.warnings),
                             ]
                         )
@@ -77,6 +82,7 @@ def write_path_replacement_reports(
                     writer.writerow(
                         [
                             mode,
+                            run_result.outcome.value,
                             result.platform.name,
                             "",
                             "",
@@ -86,6 +92,7 @@ def write_path_replacement_reports(
                             result.applied,
                             " | ".join(str(path) for path in result.backup_paths),
                             result.error or "",
+                            " | ".join(run_result.rollback_errors),
                             " | ".join(result.warnings),
                         ]
                     )
@@ -110,6 +117,7 @@ def write_path_replacement_reports(
         with (platform_dir / "path_replacements.txt").open("w", encoding="utf-8", newline="\n") as file:
             file.write(f"=== {result.platform.name} ===\n")
             file.write(f"Mode: {mode}\n")
+            file.write(f"Outcome: {run_result.outcome.value}\n")
             file.write(f"Applied: {result.applied}\n")
             if result.backup_paths:
                 file.write("Backups:\n")
@@ -117,6 +125,8 @@ def write_path_replacement_reports(
                     file.write(f"  {backup_path}\n")
             if result.error:
                 file.write(f"Error: {result.error}\n")
+            for rollback_error in run_result.rollback_errors:
+                file.write(f"Rollback error: {rollback_error}\n")
             if result.warnings:
                 file.write("Warnings:\n")
                 for warning in result.warnings:

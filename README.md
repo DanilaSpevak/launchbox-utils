@@ -280,6 +280,8 @@ On successful `--apply`, the utility:
 - does not remove `<Game>` entries;
 - writes XML to a temporary file, validates parsing, and only then replaces the original.
 
+Each platform XML is committed independently. If some files are committed and another fails, the operation reports `partial`; failed files remain unchanged or are restored from backup. CLI exits with code 1 for `partial`, `failed`, and `rolled_back` outcomes.
+
 Dry-run and audit do not perform these checks — they only read the database.
 
 ### Deduplication reports
@@ -319,7 +321,7 @@ python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --
 python launchbox_utils.py replace-paths --old "D:\OldRoms" --new "E:\NewRoms" --only-with-findings
 ```
 
-Before apply, the same LaunchBox process and XML lock checks are performed as for deduplication. Backups are created in `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>`, then XML is written through the safe temp-file path.
+Before apply, the same LaunchBox process and XML lock checks are performed as for deduplication. All affected XML files form one transaction: every document is validated, backed up, and staged before commit. If a later replacement fails, already replaced files are restored from backup and the operation reports `rolled_back` instead of marking replacements as applied. Backups are stored in `<LaunchBox>\Data\Backups\PathReplacement-<timestamp>`.
 
 Reports:
 
@@ -676,6 +678,8 @@ python launchbox_utils.py dedupe-additional-apps --platform "Watara Supervision"
 - удаляет только дублирующие `<AdditionalApplication>`;
 - не удаляет `<Game>`;
 - записывает XML во временный файл, проверяет парсинг и только после этого заменяет оригинал.
+
+XML каждой платформы фиксируется независимо. Если часть файлов записана, а другой файл завершился ошибкой, операция возвращает `partial`; неуспешные файлы остаются без изменений или восстанавливаются из backup. Для `partial`, `failed` и `rolled_back` CLI завершается с кодом 1.
 
 Dry-run и аудит эти проверки не выполняют — они только читают базу.
 

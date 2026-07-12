@@ -9,11 +9,13 @@ from ..models import (
     AdditionalApplicationDuplicate,
     AdditionalAppsDedupeResult,
     GameEntry,
+    MutationOutcome,
+    MutationRunResult,
     PlatformInfo,
 )
 from ..paths import path_key
 from ..runtime_checks import ensure_safe_to_mutate
-from ..safe_write import backup_platform_xml, write_xml_tree_safely
+from ..safe_write import XmlMutation, execute_xml_transaction
 from ..xml_repository import load_application_entries, load_platforms, local_name, parse_xml_tree
 
 
@@ -141,11 +143,11 @@ def dedupe_additional_apps_for_platform(
     root: Path,
     apply_changes: bool,
     backup_root: Path,
-) -> AdditionalAppsDedupeResult:
+) -> tuple[AdditionalAppsDedupeResult, MutationOutcome, list[str]]:
     result = AdditionalAppsDedupeResult(platform=platform)
     if not platform.database_xml.exists():
         result.warnings.append(f"Platform XML not found: {platform.database_xml}")
-        return result
+        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, []
 
     tree = parse_xml_tree(platform.database_xml)
     entries, warnings = load_application_entries(platform, root, tree.getroot(), include_xml_links=True)
@@ -157,7 +159,7 @@ def dedupe_additional_apps_for_platform(
 
     if not apply_changes or not duplicates:
         result.warnings.sort()
-        return result
+        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, []
 
     removable_duplicates = [
         duplicate
@@ -170,23 +172,24 @@ def dedupe_additional_apps_for_platform(
 
     if not removable_duplicates:
         result.warnings.sort()
-        return result
+        return result, MutationOutcome.SUCCESS, []
 
-    result.backup_path = backup_platform_xml(platform, backup_root)
     for duplicate in removable_duplicates:
         duplicate.duplicate.parent.remove(duplicate.duplicate.element)
 
-    write_xml_tree_safely(tree, platform.database_xml)
-    result.applied = True
+    transaction = execute_xml_transaction([XmlMutation(platform.database_xml, tree)], backup_root)
+    result.backup_path = transaction.backup_paths.get(platform.database_xml.resolve(strict=False))
+    result.error = transaction.error
+    result.applied = transaction.outcome == MutationOutcome.SUCCESS
     result.warnings.sort()
-    return result
+    return result, transaction.outcome, transaction.rollback_errors
 
 
 def run_additional_apps_dedupe(
     root: Path,
     platform_filter: str | None = None,
     apply_changes: bool = False,
-) -> list[AdditionalAppsDedupeResult]:
+) -> MutationRunResult[AdditionalAppsDedupeResult]:
     root = root.resolve(strict=False)
     platforms = load_platforms(root)
     if platform_filter:
@@ -199,9 +202,33 @@ def run_additional_apps_dedupe(
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_root = root / "Data" / "Backups" / f"AdditionalAppsDedupe-{timestamp}"
     results: list[AdditionalAppsDedupeResult] = []
+    outcomes: list[MutationOutcome] = []
+    rollback_errors: list[str] = []
     for platform in platforms:
         try:
-            results.append(dedupe_additional_apps_for_platform(platform, root, apply_changes, backup_root))
+            result, outcome, platform_rollback_errors = dedupe_additional_apps_for_platform(
+                platform, root, apply_changes, backup_root
+            )
+            results.append(result)
+            outcomes.append(outcome)
+            rollback_errors.extend(platform_rollback_errors)
         except (ET.ParseError, OSError) as exc:
             results.append(AdditionalAppsDedupeResult(platform=platform, error=str(exc)))
-    return results
+            outcomes.append(MutationOutcome.FAILED)
+
+    if not apply_changes:
+        outcome = MutationOutcome.FAILED if MutationOutcome.FAILED in outcomes else MutationOutcome.DRY_RUN
+    else:
+        committed_count = sum(1 for result in results if result.applied)
+        unsuccessful = any(item in {MutationOutcome.FAILED, MutationOutcome.ROLLED_BACK} for item in outcomes)
+        if committed_count and unsuccessful:
+            outcome = MutationOutcome.PARTIAL
+        elif MutationOutcome.ROLLED_BACK in outcomes and MutationOutcome.FAILED not in outcomes:
+            outcome = MutationOutcome.ROLLED_BACK
+        elif unsuccessful:
+            outcome = MutationOutcome.FAILED
+        else:
+            outcome = MutationOutcome.SUCCESS
+
+    errors = [result.error for result in results if result.error]
+    return MutationRunResult(results, outcome, " | ".join(errors) or None, rollback_errors)
