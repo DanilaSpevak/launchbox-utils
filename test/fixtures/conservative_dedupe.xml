@@ -29,4 +29,7 @@
   <AdditionalApplication><GameID>future-boolean</GameID><Name>Future boolean</Name><ApplicationPath>Games/NES/future-boolean.zip</ApplicationPath><FutureBoolean>true</FutureBoolean></AdditionalApplication>
   <AdditionalApplication><GameID>mixed-content</GameID><Name>Mixed content</Name><ApplicationPath>Games/NES/mixed-content.zip</ApplicationPath><FutureSetting>before<Part />after  text</FutureSetting></AdditionalApplication>
   <AdditionalApplication><GameID>mixed-content</GameID><Name>Mixed content</Name><ApplicationPath>Games/NES/mixed-content.zip</ApplicationPath><FutureSetting>before<Part />after text</FutureSetting></AdditionalApplication>
+  <AdditionalApplication><GameID>repeated-path</GameID><Name>Repeated path</Name><ApplicationPath>Games/NES/repeated-main.zip</ApplicationPath><ApplicationPath>Games/NES/variant-a.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication><GameID>repeated-path</GameID><Name>Repeated path</Name><ApplicationPath>Games\NES\repeated-main.zip</ApplicationPath><ApplicationPath>Games\NES\variant-a.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication><GameID>repeated-path</GameID><Name>Repeated path</Name><ApplicationPath>Games/NES/repeated-main.zip</ApplicationPath><ApplicationPath>Games/NES/variant-b.zip</ApplicationPath></AdditionalApplication>
 </LaunchBox>

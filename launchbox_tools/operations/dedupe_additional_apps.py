@@ -13,7 +13,7 @@ from ..models import (
     MutationRunResult,
     PlatformInfo,
 )
-from ..paths import path_key
+from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import XmlMutation, execute_xml_transaction
 from ..xml_repository import load_application_entries, load_platforms, local_name, parse_xml_tree
@@ -26,7 +26,7 @@ _CANONICAL_BOOLEAN_FIELDS = frozenset({"AutoRunBefore", "AutoRunAfter", "UseEmul
 def _normalize_xml_text(
     tag: str,
     text: str,
-    entry: GameEntry,
+    root: Path,
     is_entry_field: bool = False,
     has_children: bool = False,
 ) -> str:
@@ -35,7 +35,9 @@ def _normalize_xml_text(
     if is_entry_field and tag == "GameID":
         return text.strip().casefold()
     if is_entry_field and tag == "ApplicationPath":
-        return path_key(entry.resolved_path)
+        if not text.strip():
+            return text
+        return path_key(resolve_launchbox_path(root, text))
     if is_entry_field and tag in _CANONICAL_BOOLEAN_FIELDS:
         value = text.strip()
         if value.casefold() in {"true", "false"}:
@@ -45,7 +47,7 @@ def _normalize_xml_text(
 
 def _canonical_element(
     element: ET.Element,
-    entry: GameEntry,
+    root: Path,
     is_entry_field: bool = False,
     include_tail: bool = False,
 ) -> CanonicalElement:
@@ -55,37 +57,37 @@ def _canonical_element(
         sorted(
             _canonical_element(
                 child,
-                entry,
+                root,
                 is_entry_field=tag == "AdditionalApplication",
                 include_tail=True,
             )
             for child in element
         )
     )
-    text = _normalize_xml_text(tag, element.text or "", entry, is_entry_field, has_children=bool(children))
+    text = _normalize_xml_text(tag, element.text or "", root, is_entry_field, has_children=bool(children))
     tail = element.tail or ""
     if not include_tail or not tail.strip():
         tail = ""
     return element.tag, attributes, text, tail, children
 
 
-def additional_app_canonical_signature(entry: GameEntry) -> CanonicalElement | None:
+def additional_app_canonical_signature(entry: GameEntry, root: Path) -> CanonicalElement | None:
     if entry.entry_type != "AdditionalApplication" or entry.element is None:
         return None
-    return _canonical_element(entry.element, entry)
+    return _canonical_element(entry.element, root)
 
 
-def _field_signatures(entry: GameEntry) -> dict[str, tuple[CanonicalElement, ...]]:
+def _field_signatures(entry: GameEntry, root: Path) -> dict[str, tuple[CanonicalElement, ...]]:
     if entry.element is None:
         return {}
     fields: dict[str, list[CanonicalElement]] = {}
     for child in entry.element:
-        fields.setdefault(local_name(child.tag), []).append(_canonical_element(child, entry, is_entry_field=True))
+        fields.setdefault(local_name(child.tag), []).append(_canonical_element(child, root, is_entry_field=True))
     return {name: tuple(sorted(values)) for name, values in fields.items()}
 
 
-def _differing_fields(variants: list[GameEntry]) -> tuple[str, ...]:
-    field_maps = [_field_signatures(entry) for entry in variants]
+def _differing_fields(variants: list[GameEntry], root: Path) -> tuple[str, ...]:
+    field_maps = [_field_signatures(entry, root) for entry in variants]
     names = {name for fields in field_maps for name in fields}
     differing = [name for name in names if len({fields.get(name) for fields in field_maps}) > 1]
     root_attributes = [
@@ -129,7 +131,7 @@ def find_additional_app_duplicates(
             warnings.append(f"AdditionalApplication skipped for dedupe because GameID or ApplicationPath is empty: {entry.title}")
             continue
 
-        signature = additional_app_canonical_signature(entry)
+        signature = additional_app_canonical_signature(entry, root)
         if signature is None:
             warnings.append(f"AdditionalApplication skipped for dedupe because XML content is unavailable: {entry.title}")
             continue
@@ -158,7 +160,7 @@ def find_additional_app_duplicates(
                 platform=platform,
                 key=key,
                 variants=tuple(variants),
-                differing_fields=_differing_fields(variants),
+                differing_fields=_differing_fields(variants, root),
             )
         )
 

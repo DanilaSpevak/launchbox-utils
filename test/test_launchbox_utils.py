@@ -1030,8 +1030,8 @@ language = fr
             write_dedupe_reports(run_result, output_dir, apply_changes=False)
 
             self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
-            self.assertEqual(len(result.duplicates), 2)
-            self.assertEqual(len(result.ambiguities), 11)
+            self.assertEqual(len(result.duplicates), 3)
+            self.assertEqual(len(result.ambiguities), 12)
             ambiguities = {ambiguity.key[0]: ambiguity for ambiguity in result.ambiguities}
             duplicate_keys = {duplicate.key[0] for duplicate in result.duplicates}
             self.assertEqual(ambiguities["command-whitespace"].differing_fields, ("CommandLine",))
@@ -1039,6 +1039,11 @@ language = fr
             self.assertEqual(ambiguities["attribute-whitespace"].differing_fields, ("@attributes",))
             self.assertEqual(ambiguities["future-boolean"].differing_fields, ("FutureBoolean",))
             self.assertEqual(ambiguities["mixed-content"].differing_fields, ("FutureSetting",))
+            self.assertEqual(ambiguities["repeated-path"].differing_fields, ("ApplicationPath",))
+            self.assertEqual(
+                sum(duplicate.key[0] == "repeated-path" for duplicate in result.duplicates),
+                1,
+            )
             self.assertTrue(
                 {
                     "command-whitespace",
@@ -1079,9 +1084,9 @@ language = fr
             self.assertTrue(result.applied)
             self.assertIsNotNone(result.backup_path)
             self.assertTrue(result.backup_path.exists())
-            self.assertEqual(len(result.duplicates), 2)
-            self.assertEqual(len(result.ambiguities), 11)
-            self.assertEqual(len(remaining), 23)
+            self.assertEqual(len(result.duplicates), 3)
+            self.assertEqual(len(result.ambiguities), 12)
+            self.assertEqual(len(remaining), 25)
             self.assertEqual(sum(child_text(element, "GameID") == "mixed" for element in remaining), 2)
             command_lines = [
                 child_text(element, "CommandLine")
@@ -1107,6 +1112,22 @@ language = fr
                 if child_text(element, "GameID") == "future-boolean"
             ]
             self.assertEqual(future_booleans, ["TRUE", "true"])
+            repeated_paths = [
+                [
+                    child.text or ""
+                    for child in element
+                    if local_name(child.tag) == "ApplicationPath"
+                ]
+                for element in remaining
+                if child_text(element, "GameID") == "repeated-path"
+            ]
+            self.assertEqual(
+                repeated_paths,
+                [
+                    ["Games/NES/repeated-main.zip", "Games/NES/variant-a.zip"],
+                    ["Games/NES/repeated-main.zip", "Games/NES/variant-b.zip"],
+                ],
+            )
 
     def test_ensure_safe_to_mutate_blocks_when_launchbox_running(self) -> None:
         with self.make_root() as temp_dir:
