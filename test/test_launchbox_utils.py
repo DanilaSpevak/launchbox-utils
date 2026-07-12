@@ -39,7 +39,12 @@ from launchbox_tools.paths import safe_report_dir_name
 from launchbox_tools.reports.audit_reports import write_reports
 from launchbox_tools.reports.dedupe_reports import write_dedupe_reports
 from launchbox_tools.reports.path_replacement_reports import write_path_replacement_reports
-from launchbox_tools.safe_write import XmlMutation, XmlTransactionResult, execute_xml_transaction
+from launchbox_tools.safe_write import (
+    XmlMutation,
+    XmlTransactionResult,
+    execute_xml_transaction,
+    reserve_unique_backup_root,
+)
 from launchbox_tools.xml_repository import child_text, load_platforms, local_name, parse_xml
 
 
@@ -49,6 +54,36 @@ class LaunchBoxAuditTests(unittest.TestCase):
         root = Path(temp_dir.name)
         (root / "Data" / "Platforms").mkdir(parents=True)
         return temp_dir
+
+    def test_reserve_unique_backup_root_rejects_parent_file(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            backup_parent = root / "backup-parent"
+            backup_parent.write_text("not a directory", encoding="utf-8")
+
+            with self.assertRaisesRegex(NotADirectoryError, "Backup parent is not a directory"):
+                reserve_unique_backup_root(backup_parent, "run")
+
+    def test_reserve_unique_backup_root_reraises_non_collision_file_exists_error(self) -> None:
+        with self.make_root() as temp_dir:
+            backup_parent = Path(temp_dir) / "Backups"
+            backup_parent.mkdir()
+            real_mkdir = Path.mkdir
+            mkdir_calls = 0
+
+            def fail_candidate(path: Path, *args: object, **kwargs: object) -> None:
+                nonlocal mkdir_calls
+                mkdir_calls += 1
+                if path == backup_parent:
+                    real_mkdir(path, *args, **kwargs)
+                    return
+                raise FileExistsError("not a candidate collision")
+
+            with patch.object(Path, "mkdir", autospec=True, side_effect=fail_candidate):
+                with self.assertRaisesRegex(FileExistsError, "not a candidate collision"):
+                    reserve_unique_backup_root(backup_parent, "run")
+
+            self.assertEqual(mkdir_calls, 2)
 
     def test_xml_transaction_rolls_back_already_committed_files(self) -> None:
         with self.make_root() as temp_dir:

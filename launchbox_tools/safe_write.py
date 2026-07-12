@@ -24,14 +24,20 @@ def backup_platform_xml(platform: PlatformInfo, backup_root: Path) -> Path:
 
 
 def reserve_unique_backup_root(backup_parent: Path, name: str) -> Path:
+    if backup_parent.exists() and not backup_parent.is_dir():
+        raise NotADirectoryError(f"Backup parent is not a directory: {backup_parent}")
+    backup_parent.mkdir(parents=True, exist_ok=True)
+
     attempt = 1
     while True:
         suffix = "" if attempt == 1 else f"-{attempt}"
         candidate = backup_parent / f"{name}{suffix}"
         try:
-            candidate.mkdir(parents=True, exist_ok=False)
+            candidate.mkdir(exist_ok=False)
             return candidate
         except FileExistsError:
+            if not candidate.exists():
+                raise
             attempt += 1
 
 
