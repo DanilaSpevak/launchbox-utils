@@ -1341,9 +1341,59 @@ language = fr
             self.assertEqual(run_result.outcome, MutationOutcome.ROLLED_BACK)
             self.assertEqual(run_result.results[0].state, MutationState.ROLLED_BACK)
             self.assertEqual(run_result.results[0].duplicates[0].state, MutationState.ROLLED_BACK)
+            self.assertEqual(run_result.results[0].duplicates[0].error, "simulated commit failure")
             manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["outcome"], "rolled_back")
             self.assertEqual(manifest["changes"][0]["state"], "rolled_back")
+            self.assertEqual(manifest["changes"][0]["error"], "simulated commit failure")
+
+    def test_dedupe_prepared_change_repeats_transaction_error_in_report_and_manifest(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                self.duplicate_additional_app_xml(
+                    "game-1", "Keep", "Remove", "Games/NES/duplicate.zip"
+                ),
+            )
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            transaction = XmlTransactionResult(
+                MutationOutcome.FAILED,
+                error="precommit check failed",
+                files=[
+                    MutationFileResult(
+                        xml_path.resolve(strict=False),
+                        MutationState.PREPARED,
+                    )
+                ],
+            )
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch(
+                    "launchbox_tools.operations.dedupe_additional_apps.execute_xml_transaction",
+                    return_value=transaction,
+                ):
+                    run_result = run_additional_apps_dedupe(root, apply_changes=True)
+
+            output_dir = root / "Reports"
+            write_dedupe_reports(run_result, output_dir, apply_changes=True)
+            rows = list(
+                csv.DictReader(
+                    (output_dir / "duplicate_additional_apps.csv")
+                    .read_text(encoding="utf-8-sig")
+                    .splitlines()[1:],
+                    delimiter=";",
+                )
+            )
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(run_result.results[0].duplicates[0].state, MutationState.PREPARED)
+            self.assertEqual(run_result.results[0].duplicates[0].error, "precommit check failed")
+            self.assertEqual(rows[0]["state"], "prepared")
+            self.assertEqual(rows[0]["error"], "precommit check failed")
+            self.assertEqual(manifest["changes"][0]["state"], "prepared")
+            self.assertEqual(manifest["changes"][0]["error"], "precommit check failed")
 
     def test_conservative_dedupe_fixture_dry_run_reports_duplicates_and_ambiguities(self) -> None:
         with self.make_root() as temp_dir:
@@ -1572,12 +1622,15 @@ language = fr
             self.assertIsNone(results.results[0].error)
             self.assertEqual(results.results[1].state, MutationState.FAILED)
             self.assertEqual(results.results[1].error, "simulated write failure")
+            self.assertEqual(results.results[1].duplicates[0].error, "simulated write failure")
             manifest = json.loads(results.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["outcome"], "partial")
             self.assertEqual(
                 {item["state"] for item in manifest["files"]},
                 {"committed", "failed"},
             )
+            failed_change = next(item for item in manifest["changes"] if item["state"] == "failed")
+            self.assertEqual(failed_change["error"], "simulated write failure")
 
             nes_xml = parse_xml(root / "Data" / "Platforms" / "Nintendo Entertainment System.xml")
             nes_names = [child_text(element, "Name") for element in nes_xml if local_name(element.tag) == "AdditionalApplication"]

@@ -232,8 +232,13 @@ def dedupe_additional_apps_for_platform(
     result.backup_path = transaction.backup_paths.get(platform.database_xml.resolve(strict=False))
     result.error = transaction.error
     if transaction.files:
-        result.state = transaction.files[0].state
-        result.duplicates = [replace(duplicate, state=result.state) for duplicate in result.duplicates]
+        file_result = transaction.files[0]
+        result.state = file_result.state
+        change_error = file_result.error or transaction.error
+        result.duplicates = [
+            replace(duplicate, state=result.state, error=change_error)
+            for duplicate in result.duplicates
+        ]
     result.warnings.sort()
     return result, transaction.outcome, transaction.rollback_errors, transaction.files
 
