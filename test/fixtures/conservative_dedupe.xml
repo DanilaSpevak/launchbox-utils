@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LaunchBox>
   <AdditionalApplication>
-    <GameID>exact</GameID><Name>Exact</Name><ApplicationPath>Games/NES/exact.zip</ApplicationPath><AutoRunBefore>True</AutoRunBefore>
+    <GameID>exact</GameID><Name>Exact</Name><ApplicationPath>Games/NES/exact.zip</ApplicationPath><AutoRunBefore>True</AutoRunBefore><AutoRunAfter>FALSE</AutoRunAfter><UseEmulator>TRUE</UseEmulator>
   </AdditionalApplication>
   <AdditionalApplication>
-    <AutoRunBefore>true</AutoRunBefore><ApplicationPath>Games\NES\exact.zip</ApplicationPath><Name>Exact</Name><GameID> EXACT </GameID>
+    <UseEmulator>true</UseEmulator><AutoRunAfter>false</AutoRunAfter><AutoRunBefore>true</AutoRunBefore><ApplicationPath>Games\NES\exact.zip</ApplicationPath><Name>Exact</Name><GameID> EXACT </GameID>
   </AdditionalApplication>
   <AdditionalApplication><GameID>command</GameID><Name>Command</Name><ApplicationPath>Games/NES/command.zip</ApplicationPath><CommandLine>-a</CommandLine></AdditionalApplication>
   <AdditionalApplication><GameID>command</GameID><Name>Command</Name><ApplicationPath>Games/NES/command.zip</ApplicationPath><CommandLine>-b</CommandLine></AdditionalApplication>
@@ -19,4 +19,14 @@
   <AdditionalApplication><GameID>mixed</GameID><Name>Mixed</Name><ApplicationPath>Games/NES/mixed.zip</ApplicationPath><CommandLine>-a</CommandLine></AdditionalApplication>
   <AdditionalApplication><CommandLine>-a</CommandLine><ApplicationPath>Games/NES/mixed.zip</ApplicationPath><Name>Mixed</Name><GameID>mixed</GameID></AdditionalApplication>
   <AdditionalApplication><GameID>mixed</GameID><Name>Mixed</Name><ApplicationPath>Games/NES/mixed.zip</ApplicationPath><CommandLine>-b</CommandLine></AdditionalApplication>
+  <AdditionalApplication><GameID>command-whitespace</GameID><Name>Command whitespace</Name><ApplicationPath>Games/NES/command-whitespace.zip</ApplicationPath><CommandLine>--label=&quot;a  b&quot;</CommandLine></AdditionalApplication>
+  <AdditionalApplication><GameID>command-whitespace</GameID><Name>Command whitespace</Name><ApplicationPath>Games/NES/command-whitespace.zip</ApplicationPath><CommandLine>--label=&quot;a b&quot;</CommandLine></AdditionalApplication>
+  <AdditionalApplication><GameID>future-whitespace</GameID><Name>Future whitespace</Name><ApplicationPath>Games/NES/future-whitespace.zip</ApplicationPath><FutureSetting>alpha  beta</FutureSetting></AdditionalApplication>
+  <AdditionalApplication><GameID>future-whitespace</GameID><Name>Future whitespace</Name><ApplicationPath>Games/NES/future-whitespace.zip</ApplicationPath><FutureSetting>alpha beta</FutureSetting></AdditionalApplication>
+  <AdditionalApplication data-mode="alpha  beta"><GameID>attribute-whitespace</GameID><Name>Attribute whitespace</Name><ApplicationPath>Games/NES/attribute-whitespace.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication data-mode="alpha beta"><GameID>attribute-whitespace</GameID><Name>Attribute whitespace</Name><ApplicationPath>Games/NES/attribute-whitespace.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication><GameID>future-boolean</GameID><Name>Future boolean</Name><ApplicationPath>Games/NES/future-boolean.zip</ApplicationPath><FutureBoolean>TRUE</FutureBoolean></AdditionalApplication>
+  <AdditionalApplication><GameID>future-boolean</GameID><Name>Future boolean</Name><ApplicationPath>Games/NES/future-boolean.zip</ApplicationPath><FutureBoolean>true</FutureBoolean></AdditionalApplication>
+  <AdditionalApplication><GameID>mixed-content</GameID><Name>Mixed content</Name><ApplicationPath>Games/NES/mixed-content.zip</ApplicationPath><FutureSetting>before<Part />after  text</FutureSetting></AdditionalApplication>
+  <AdditionalApplication><GameID>mixed-content</GameID><Name>Mixed content</Name><ApplicationPath>Games/NES/mixed-content.zip</ApplicationPath><FutureSetting>before<Part />after text</FutureSetting></AdditionalApplication>
 </LaunchBox>

@@ -100,7 +100,7 @@ For Additional Apps dedupe, records are first grouped where both values match:
 - `GameID`
 - normalized `ApplicationPath`
 
-Within each group, the complete `<AdditionalApplication>` XML content is canonicalized. Field order, insignificant whitespace, boolean casing, `GameID` casing, and normalized path spelling do not create distinct variants. All other content, including names, command lines, emulator settings, attributes, nested elements, repeated elements, and unknown future fields, remains significant.
+Within each group, the complete `<AdditionalApplication>` XML content is canonicalized. Field order, formatting-only whitespace between XML elements, known boolean casing, `GameID` casing, and normalized path spelling do not create distinct variants. Whitespace inside field and attribute values remains significant. All other content, including names, command lines, emulator settings, attributes, nested elements, repeated elements, and unknown future fields, remains significant.
 
 Only repeated canonical variants are automatic duplicates. If a group contains multiple canonical variants, one representative of each is preserved and the group is reported as ambiguous for manual review. For `A, A, B`, only the second `A` is removable.
 

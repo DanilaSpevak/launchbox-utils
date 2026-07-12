@@ -936,7 +936,25 @@ language = fr
 
             self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
             self.assertEqual(len(result.duplicates), 2)
-            self.assertEqual(len(result.ambiguities), 6)
+            self.assertEqual(len(result.ambiguities), 11)
+            ambiguities = {ambiguity.key[0]: ambiguity for ambiguity in result.ambiguities}
+            duplicate_keys = {duplicate.key[0] for duplicate in result.duplicates}
+            self.assertEqual(ambiguities["command-whitespace"].differing_fields, ("CommandLine",))
+            self.assertEqual(ambiguities["future-whitespace"].differing_fields, ("FutureSetting",))
+            self.assertEqual(ambiguities["attribute-whitespace"].differing_fields, ("@attributes",))
+            self.assertEqual(ambiguities["future-boolean"].differing_fields, ("FutureBoolean",))
+            self.assertEqual(ambiguities["mixed-content"].differing_fields, ("FutureSetting",))
+            self.assertTrue(
+                {
+                    "command-whitespace",
+                    "future-whitespace",
+                    "attribute-whitespace",
+                    "future-boolean",
+                    "mixed-content",
+                }.isdisjoint(
+                    duplicate_keys
+                )
+            )
             fields = {field for ambiguity in result.ambiguities for field in ambiguity.differing_fields}
             self.assertTrue(
                 {"CommandLine", "AutoRunBefore", "AutoRunAfter", "EmulatorId", "Name", "FutureSetting"} <= fields
@@ -967,9 +985,33 @@ language = fr
             self.assertIsNotNone(result.backup_path)
             self.assertTrue(result.backup_path.exists())
             self.assertEqual(len(result.duplicates), 2)
-            self.assertEqual(len(result.ambiguities), 6)
-            self.assertEqual(len(remaining), 13)
+            self.assertEqual(len(result.ambiguities), 11)
+            self.assertEqual(len(remaining), 23)
             self.assertEqual(sum(child_text(element, "GameID") == "mixed" for element in remaining), 2)
+            command_lines = [
+                child_text(element, "CommandLine")
+                for element in remaining
+                if child_text(element, "GameID") == "command-whitespace"
+            ]
+            self.assertEqual(command_lines, ['--label="a  b"', '--label="a b"'])
+            future_values = [
+                child_text(element, "FutureSetting")
+                for element in remaining
+                if child_text(element, "GameID") == "future-whitespace"
+            ]
+            self.assertEqual(future_values, ["alpha  beta", "alpha beta"])
+            attribute_values = [
+                element.attrib["data-mode"]
+                for element in remaining
+                if child_text(element, "GameID") == "attribute-whitespace"
+            ]
+            self.assertEqual(attribute_values, ["alpha  beta", "alpha beta"])
+            future_booleans = [
+                child_text(element, "FutureBoolean")
+                for element in remaining
+                if child_text(element, "GameID") == "future-boolean"
+            ]
+            self.assertEqual(future_booleans, ["TRUE", "true"])
 
     def test_ensure_safe_to_mutate_blocks_when_launchbox_running(self) -> None:
         with self.make_root() as temp_dir:

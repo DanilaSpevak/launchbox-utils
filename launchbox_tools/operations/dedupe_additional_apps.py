@@ -19,27 +19,54 @@ from ..safe_write import XmlMutation, execute_xml_transaction
 from ..xml_repository import load_application_entries, load_platforms, local_name, parse_xml_tree
 
 
-CanonicalElement = tuple[str, tuple[tuple[str, str], ...], str, tuple["CanonicalElement", ...]]
+CanonicalElement = tuple[str, tuple[tuple[str, str], ...], str, str, tuple["CanonicalElement", ...]]
+_CANONICAL_BOOLEAN_FIELDS = frozenset({"AutoRunBefore", "AutoRunAfter", "UseEmulator"})
 
 
-def _normalize_xml_text(tag: str, text: str, entry: GameEntry, is_entry_field: bool = False) -> str:
-    value = " ".join(text.split())
+def _normalize_xml_text(
+    tag: str,
+    text: str,
+    entry: GameEntry,
+    is_entry_field: bool = False,
+    has_children: bool = False,
+) -> str:
+    if has_children and not text.strip():
+        return ""
     if is_entry_field and tag == "GameID":
-        return value.casefold()
+        return text.strip().casefold()
     if is_entry_field and tag == "ApplicationPath":
         return path_key(entry.resolved_path)
-    if value.casefold() in {"true", "false"}:
-        return value.casefold()
-    return value
+    if is_entry_field and tag in _CANONICAL_BOOLEAN_FIELDS:
+        value = text.strip()
+        if value.casefold() in {"true", "false"}:
+            return value.casefold()
+    return text
 
 
-def _canonical_element(element: ET.Element, entry: GameEntry, is_entry_field: bool = False) -> CanonicalElement:
+def _canonical_element(
+    element: ET.Element,
+    entry: GameEntry,
+    is_entry_field: bool = False,
+    include_tail: bool = False,
+) -> CanonicalElement:
     tag = local_name(element.tag)
-    attributes = tuple(sorted((name, " ".join(value.split())) for name, value in element.attrib.items()))
+    attributes = tuple(sorted(element.attrib.items()))
     children = tuple(
-        sorted(_canonical_element(child, entry, is_entry_field=tag == "AdditionalApplication") for child in element)
+        sorted(
+            _canonical_element(
+                child,
+                entry,
+                is_entry_field=tag == "AdditionalApplication",
+                include_tail=True,
+            )
+            for child in element
+        )
     )
-    return element.tag, attributes, _normalize_xml_text(tag, element.text or "", entry, is_entry_field), children
+    text = _normalize_xml_text(tag, element.text or "", entry, is_entry_field, has_children=bool(children))
+    tail = element.tail or ""
+    if not include_tail or not tail.strip():
+        tail = ""
+    return element.tag, attributes, text, tail, children
 
 
 def additional_app_canonical_signature(entry: GameEntry) -> CanonicalElement | None:
@@ -62,7 +89,7 @@ def _differing_fields(variants: list[GameEntry]) -> tuple[str, ...]:
     names = {name for fields in field_maps for name in fields}
     differing = [name for name in names if len({fields.get(name) for fields in field_maps}) > 1]
     root_attributes = [
-        tuple(sorted((name, " ".join(value.split())) for name, value in entry.element.attrib.items()))
+        tuple(sorted(entry.element.attrib.items()))
         for entry in variants
         if entry.element is not None
     ]

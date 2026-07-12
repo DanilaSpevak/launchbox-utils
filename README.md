@@ -224,7 +224,7 @@ Platform subfolder names are sanitized of characters invalid in Windows file nam
 - `GameID` (case-insensitive);
 - file path after resolving relative to the LaunchBox root and normalizing (case-insensitive).
 
-Automatic removal is limited to entries whose complete XML content is canonically equal. Field order, insignificant whitespace, boolean casing, `GameID` casing, and equivalent path spelling are normalized. Every other field remains significant, including `Name`, `CommandLine`, autorun flags, emulator settings, attributes, nested data, and unknown future fields.
+Automatic removal is limited to entries whose complete XML content is canonically equal. Field order, formatting-only whitespace between XML elements, known boolean casing, `GameID` casing, and equivalent path spelling are normalized. Whitespace inside field and attribute values remains significant. Every other field remains significant, including `Name`, `CommandLine`, autorun flags, emulator settings, attributes, nested data, and unknown future fields.
 
 Groups with the same `GameID` and path but different canonical content are reported as ambiguous and left for manual review. If a group contains `A, A, B`, only the repeated `A` is removable; one `A` and `B` remain. Entries with an empty `GameID` or `ApplicationPath` are skipped and appear in the report warnings.
 
@@ -623,7 +623,7 @@ python launchbox_utils.py audit --only-with-findings
 - `GameID` (без учёта регистра);
 - путь к файлу после разрешения относительно корня LaunchBox и нормализации (без учёта регистра).
 
-Автоматически удаляются только записи с канонически одинаковым полным XML-содержимым. Нормализуются порядок полей, незначащие пробелы, регистр булевых значений и `GameID`, а также эквивалентное написание пути. Все остальные поля значимы, включая `Name`, `CommandLine`, флаги автозапуска, настройки эмулятора, атрибуты, вложенные данные и неизвестные будущие поля.
+Автоматически удаляются только записи с канонически одинаковым полным XML-содержимым. Нормализуются порядок полей, только форматирующие пробелы между XML-элементами, регистр известных булевых значений и `GameID`, а также эквивалентное написание пути. Пробелы внутри значений полей и атрибутов остаются значимыми. Все остальные поля значимы, включая `Name`, `CommandLine`, флаги автозапуска, настройки эмулятора, атрибуты, вложенные данные и неизвестные будущие поля.
 
 Группы с одинаковыми `GameID` и путём, но разным каноническим содержимым отмечаются как ambiguous и остаются для ручного решения. Для группы `A, A, B` удалению подлежит только повторный `A`; по одному варианту `A` и `B` сохраняются. Записи с пустым `GameID` или `ApplicationPath` пропускаются и попадают в предупреждения отчёта.
 
