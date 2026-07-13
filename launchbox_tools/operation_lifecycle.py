@@ -48,7 +48,10 @@ class OperationControl:
 
     def request_cancel(self) -> bool:
         with self._lock:
-            if self._commit_started or self._phase == OperationPhase.FINISHED:
+            if self._commit_started or self._phase not in {
+                OperationPhase.SCAN,
+                OperationPhase.STAGE,
+            }:
                 return False
             self._cancel_event.set()
             return True

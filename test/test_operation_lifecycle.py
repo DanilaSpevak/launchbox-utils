@@ -77,6 +77,13 @@ class OperationLifecycleTests(unittest.TestCase):
         self.assertEqual(control.snapshot().phase, OperationPhase.FINISHED)
         self.assertFalse(control.request_cancel())
 
+    def test_finalize_rejects_cancel_without_commit(self) -> None:
+        control = OperationControl()
+        control.set_phase(OperationPhase.FINALIZE)
+
+        self.assertFalse(control.request_cancel())
+        self.assertFalse(control.snapshot().cancel_requested)
+
 
 if __name__ == "__main__":
     unittest.main()

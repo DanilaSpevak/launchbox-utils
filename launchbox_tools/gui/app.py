@@ -708,6 +708,9 @@ class LaunchBoxUtilsApp:
         start_message: str,
         target: Callable[[OperationControl], None],
     ) -> None:
+        if self.close_requested:
+            messagebox.showinfo(self.t("close_pending_title"), self.t("close_pending_message"))
+            return
         if self.is_busy():
             messagebox.showwarning(self.t("failed"), self.t("busy"))
             return
@@ -730,26 +733,39 @@ class LaunchBoxUtilsApp:
             self.root.destroy()
             return
 
+        if self.close_requested:
+            messagebox.showinfo(self.t("close_pending_title"), self.t("close_pending_message"))
+            return
+
         control = self.operation_control
         if control is None:
-            messagebox.showwarning(self.t("close_blocked_title"), self.t("close_blocked_message"))
+            self.close_requested = True
+            self.append_log(self.t("close_deferred"))
+            messagebox.showinfo(self.t("close_pending_title"), self.t("protected_close_message"))
             return
 
         snapshot = control.snapshot()
-        if snapshot.commit_started:
-            messagebox.showwarning(self.t("close_blocked_title"), self.t("close_blocked_message"))
-            return
-        if self.close_requested:
-            messagebox.showinfo(self.t("cancel_pending_title"), self.t("cancel_pending_message"))
+        if snapshot.commit_started or snapshot.phase not in {
+            OperationPhase.SCAN,
+            OperationPhase.STAGE,
+        }:
+            self.close_requested = True
+            self.append_log(self.t("close_deferred"))
+            messagebox.showinfo(self.t("close_pending_title"), self.t("protected_close_message"))
             return
         if not messagebox.askyesno(self.t("confirm_cancel_title"), self.t("confirm_cancel_message")):
             return
-        if not control.request_cancel():
-            messagebox.showwarning(self.t("close_blocked_title"), self.t("close_blocked_message"))
-            return
 
         self.close_requested = True
-        self.append_log(self.t("cancel_requested"))
+        if control.request_cancel():
+            self.append_log(self.t("cancel_requested"))
+            return
+
+        if not self.is_busy():
+            self.root.destroy()
+            return
+        self.append_log(self.t("close_deferred"))
+        messagebox.showinfo(self.t("close_pending_title"), self.t("protected_close_message"))
 
     def run_audit_operation(self) -> None:
         paths = self.validate_paths()

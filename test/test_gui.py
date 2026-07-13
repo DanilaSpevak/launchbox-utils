@@ -237,27 +237,76 @@ class GuiTests(LaunchBoxTestCase):
         self.assertFalse(app.operation_control.snapshot().cancel_requested)
         app.root.destroy.assert_not_called()
 
-    def test_gui_close_is_blocked_during_commit_and_rollback(self) -> None:
+    def test_gui_close_is_deferred_during_protected_phases(self) -> None:
         from launchbox_tools.gui.app import LaunchBoxUtilsApp
 
-        for phase in (OperationPhase.COMMIT, OperationPhase.ROLLBACK):
+        for phase in (OperationPhase.COMMIT, OperationPhase.ROLLBACK, OperationPhase.FINALIZE):
             with self.subTest(phase=phase):
                 app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
                 app.worker = Mock()
                 app.worker.is_alive.return_value = True
                 app.operation_control = OperationControl()
-                app.operation_control.begin_commit()
+                if phase != OperationPhase.FINALIZE:
+                    app.operation_control.begin_commit()
                 app.operation_control.set_phase(phase)
                 app.close_requested = False
                 app.root = Mock()
+                app.append_log = Mock()
+                app.log_queue = queue.Queue()
                 app.t = lambda key: translate("en", key)
 
-                with patch("launchbox_tools.gui.app.messagebox.showwarning") as showwarning:
+                with patch("launchbox_tools.gui.app.messagebox.showinfo") as showinfo:
                     app.on_close()
 
-                showwarning.assert_called_once()
+                showinfo.assert_called_once()
+                self.assertTrue(app.close_requested)
                 self.assertFalse(app.operation_control.request_cancel())
                 app.root.destroy.assert_not_called()
+
+                app.worker.is_alive.return_value = False
+                app.process_log_queue()
+
+                app.root.destroy.assert_called_once_with()
+                app.root.after.assert_not_called()
+
+    def test_gui_close_destroys_window_if_worker_finishes_during_confirmation(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.worker = Mock()
+        app.worker.is_alive.return_value = True
+        app.operation_control = OperationControl()
+        app.close_requested = False
+        app.root = Mock()
+        app.append_log = Mock()
+        app.t = lambda key: translate("en", key)
+
+        def finish_worker(*_args) -> bool:
+            app.operation_control.finish()
+            app.worker.is_alive.return_value = False
+            return True
+
+        with patch("launchbox_tools.gui.app.messagebox.askyesno", side_effect=finish_worker):
+            with patch("launchbox_tools.gui.app.messagebox.showinfo") as showinfo:
+                app.on_close()
+
+        self.assertTrue(app.close_requested)
+        app.root.destroy.assert_called_once_with()
+        showinfo.assert_not_called()
+
+    def test_gui_does_not_start_worker_after_close_requested(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.close_requested = True
+        app.worker = None
+        app.t = lambda key: translate("en", key)
+
+        with patch("launchbox_tools.gui.app.messagebox.showinfo") as showinfo:
+            app.start_worker("start", Mock())
+
+        showinfo.assert_called_once()
+        self.assertIsNone(app.worker)
 
     def test_gui_worker_is_non_daemon(self) -> None:
         from launchbox_tools.gui.app import LaunchBoxUtilsApp
@@ -266,6 +315,7 @@ class GuiTests(LaunchBoxTestCase):
         app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
         app.worker = None
         app.operation_control = None
+        app.close_requested = False
         app.save_config = Mock()
         app.append_log = Mock()
         app.t = lambda key: translate("en", key)
@@ -299,6 +349,78 @@ class GuiTests(LaunchBoxTestCase):
         write_reports.assert_not_called()
         self.assertIn("Cancelled", messages)
         self.assertNotIn("Traceback", "\n".join(messages))
+
+    def test_gui_real_tk_close_lifecycle_for_all_phases(self) -> None:
+        import tkinter as tk
+
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        for phase in (
+            OperationPhase.SCAN,
+            OperationPhase.STAGE,
+            OperationPhase.COMMIT,
+            OperationPhase.ROLLBACK,
+            OperationPhase.FINALIZE,
+        ):
+            with self.subTest(phase=phase):
+                root = None
+                release = threading.Event()
+                app = None
+                try:
+                    try:
+                        root = tk.Tk()
+                    except tk.TclError as exc:
+                        self.skipTest(f"Tk is not available: {exc}")
+                    root.withdraw()
+
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        app = LaunchBoxUtilsApp(root, Path(temp_dir) / "launchbox_utils.ini")
+                        root.update_idletasks()
+                        self.assertTrue(root.protocol("WM_DELETE_WINDOW"))
+                        started = threading.Event()
+
+                        def worker(control: OperationControl) -> None:
+                            if phase in {OperationPhase.COMMIT, OperationPhase.ROLLBACK}:
+                                control.begin_commit()
+                            control.set_phase(phase)
+                            started.set()
+                            if phase in {OperationPhase.SCAN, OperationPhase.STAGE}:
+                                try:
+                                    while not release.wait(0.005):
+                                        control.checkpoint()
+                                except OperationCancelled:
+                                    return
+                            else:
+                                release.wait(timeout=2)
+
+                        app.start_worker("start", worker)
+                        self.assertTrue(started.wait(timeout=2))
+
+                        if phase in {OperationPhase.SCAN, OperationPhase.STAGE}:
+                            with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
+                                app.on_close()
+                            self.assertTrue(app.operation_control.snapshot().cancel_requested)
+                        else:
+                            with patch("launchbox_tools.gui.app.messagebox.showinfo") as showinfo:
+                                app.on_close()
+                            showinfo.assert_called_once()
+                            self.assertFalse(app.operation_control.request_cancel())
+                            release.set()
+
+                        self.assertTrue(app.close_requested)
+                        app.worker.join(timeout=2)
+                        self.assertFalse(app.worker.is_alive())
+                        app.process_log_queue()
+                        root = None
+                finally:
+                    release.set()
+                    if app is not None and app.worker is not None and app.worker.is_alive():
+                        app.worker.join(timeout=2)
+                    if root is not None:
+                        try:
+                            root.destroy()
+                        except tk.TclError:
+                            pass
 
     def test_gui_language_button_toggles_and_saves_language(self) -> None:
         import tkinter as tk

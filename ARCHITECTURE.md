@@ -194,7 +194,7 @@ Mutation CSV/TXT reports use `state`, not an independent `applied` flag, and rep
 - Long operations run in a background thread.
 - GUI workers are non-daemon threads, so process exit cannot interrupt commit or rollback.
 - Worker logs are passed to the UI via `queue.Queue`.
-- `WM_DELETE_WINDOW` closes immediately while idle. During `scan` or `stage`, it asks for confirmation, requests cooperative cancellation, and closes only after the worker exits. From the first commit through rollback and finalization, closing is blocked until the worker finishes.
+- `WM_DELETE_WINDOW` closes immediately while idle. During `scan` or `stage`, it asks for confirmation, requests cooperative cancellation, and closes only after the worker exits. During commit, rollback, or finalization, the close request is deferred and the window closes automatically only after the protected worker finishes.
 - Path edits in the GUI are saved back to `launchbox_utils.ini`.
 - Apply operations run `ensure_safe_to_mutate()` on the UI thread before confirmation and before starting the worker.
 
