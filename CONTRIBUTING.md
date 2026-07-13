@@ -8,6 +8,7 @@ Thank you for your interest in LaunchBox Utils.
 - Runtime dependencies are limited to the Python standard library.
 - Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for module boundaries and safety rules before changing XML-mutating code.
 - Review the existing [architecture decision records](docs/decisions/README.md) before proposing significant architectural or product changes.
+- Follow the [roadmap planning and acceptance rules](docs/roadmap-workflow.md) before starting P0 or cross-cutting work.
 
 ## Development Setup
 
@@ -36,7 +37,9 @@ Tests use temporary fake LaunchBox trees and must not modify a real database.
 2. Add or update tests for behavior changes.
 3. Update README or ARCHITECTURE when user-facing behavior changes.
 4. Record significant new architectural or product directions as a `Proposed` ADR; add implementation work to the roadmap only after the decision is `Accepted`.
-5. Do not commit `launchbox_utils.ini`, report output, or backup folders.
+5. For P0 and cross-cutting changes, include the agreed invariants, scope, implementation slices, and acceptance evidence described in the [roadmap workflow](docs/roadmap-workflow.md).
+6. Mark a roadmap item `[x]` only after acceptance criteria and required validation pass; completing the main implementation is not sufficient.
+7. Do not commit `launchbox_utils.ini`, report output, or backup folders.
 
 ## XML Mutation Rules
 
