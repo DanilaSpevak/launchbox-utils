@@ -362,7 +362,6 @@ def dedupe_additional_apps_for_platform(
             replace(duplicate, state=MutationState.PLANNED, error=error)
             for duplicate in result.duplicates
         ]
-        result.warnings.sort()
         file_result = MutationFileResult(platform.database_xml.resolve(strict=False))
         return result, MutationOutcome.CANCELLED, [], [file_result]
 
@@ -382,7 +381,8 @@ def dedupe_additional_apps_for_platform(
             replace(duplicate, state=result.state, error=change_error)
             for duplicate in result.duplicates
         ]
-    result.warnings.sort()
+    if transaction.outcome != MutationOutcome.CANCELLED:
+        result.warnings.sort()
     return result, transaction.outcome, transaction.rollback_errors, transaction.files
 
 

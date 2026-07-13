@@ -51,7 +51,15 @@ class SafeWriteTests(LaunchBoxTestCase):
         root[-1].tail = "comment-tail"
         root.append(ET.ProcessingInstruction("target", "value"))
         root[-1].tail = "pi-tail"
-        child = ET.SubElement(root, "{urn:sample}Child", {ET.QName("urn:sample", "kind"): "x"})
+        child = ET.SubElement(
+            root,
+            "{urn:sample}Child",
+            {
+                ET.QName("urn:sample", "kind"): "x",
+                "reference": ET.QName("urn:sample", "value"),
+                "none-reference": ET.QName(None),
+            },
+        )
         child.text = "Привет & goodbye"
         child.tail = "after"
         ET.SubElement(root, "Empty")
@@ -68,6 +76,21 @@ class SafeWriteTests(LaunchBoxTestCase):
 
         with self.assertRaisesRegex(ValueError, "qualified name exceeds"):
             _serialize_xml_tree(ET.ElementTree(root), control=OperationControl())
+
+    def test_cancellable_xml_serialization_preserves_invalid_qname_bytes(self) -> None:
+        root = ET.Element(
+            "Root",
+            {"reference": ET.QName("urn:sample", "invalid&value")},
+        )
+        tree = ET.ElementTree(root)
+        expected = io.BytesIO()
+        tree.write(expected, encoding="utf-8", xml_declaration=True)
+
+        actual = _serialize_xml_tree(tree, control=OperationControl())
+
+        self.assertEqual(actual, expected.getvalue())
+        with self.assertRaises(ET.ParseError):
+            _validate_xml_payload(actual, control=OperationControl())
 
     def test_namespace_sort_matches_standard_order_and_is_cancellable(self) -> None:
         namespaces = {

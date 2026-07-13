@@ -172,9 +172,10 @@ def _collect_xml_namespaces(
             if key_text not in qnames:
                 add_qname(key_text)
             if isinstance(value, ET.QName):
-                validate_qname_length(value.text)
-                if value.text not in qnames:
-                    add_qname(value.text)
+                if value.text is not None:
+                    validate_qname_length(value.text)
+                    if value.text not in qnames:
+                        add_qname(value.text)
         text = element.text
         if isinstance(text, ET.QName):
             validate_qname_length(text.text)
@@ -269,11 +270,14 @@ def _serialize_xml_element(
             for key, value in element.attrib.items():
                 checkpoints.tick()
                 key_text = key.text if isinstance(key, ET.QName) else key
-                value_text = qnames[value.text] if isinstance(value, ET.QName) else value
                 writer.write_raw(" ")
                 writer.write_raw(qnames[key_text])
                 writer.write_raw('="')
-                writer.write_attribute(value_text)
+                if isinstance(value, ET.QName):
+                    qname_value = qnames[value.text]
+                    writer.write_raw("None" if qname_value is None else qname_value)
+                else:
+                    writer.write_attribute(value)
                 writer.write_raw('"')
             if text or len(element):
                 writer.write_raw(">")

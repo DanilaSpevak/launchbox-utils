@@ -226,8 +226,20 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             )
             xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
             original = xml_path.read_bytes()
+            original_find = dedupe_operation.find_additional_app_duplicates
 
-            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+            def find_with_unsorted_warnings(*args, **kwargs):
+                duplicates, ambiguities, _warnings = original_find(*args, **kwargs)
+                return duplicates, ambiguities, ["z-warning", "a-warning"]
+
+            with (
+                patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False),
+                patch.object(
+                    dedupe_operation,
+                    "find_additional_app_duplicates",
+                    side_effect=find_with_unsorted_warnings,
+                ),
+            ):
                 run_result = run_additional_apps_dedupe(
                     root,
                     apply_changes=True,
@@ -237,6 +249,7 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
             self.assertEqual(xml_path.read_bytes(), original)
             self.assertTrue(run_result.manifest_path.is_file())
+            self.assertEqual(run_result.results[0].warnings, ["z-warning", "a-warning"])
             manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["outcome"], "cancelled")
             self.assertEqual({item["state"] for item in manifest["files"]}, {"prepared"})
@@ -267,10 +280,15 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             original = xml_path.read_bytes()
             control = CancelDuringRemovalControl()
             original_remove = dedupe_operation._remove_duplicate_elements
+            original_find = dedupe_operation.find_additional_app_duplicates
 
             def cancel_during_real_removal(duplicates, *, control=None):
                 control.cancel_during_removal = True
                 return original_remove(duplicates, control=control)
+
+            def find_with_unsorted_warnings(*args, **kwargs):
+                duplicates, ambiguities, _warnings = original_find(*args, **kwargs)
+                return duplicates, ambiguities, ["z-warning", "a-warning"]
 
             with (
                 patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False),
@@ -278,6 +296,11 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                     dedupe_operation,
                     "_remove_duplicate_elements",
                     side_effect=cancel_during_real_removal,
+                ),
+                patch.object(
+                    dedupe_operation,
+                    "find_additional_app_duplicates",
+                    side_effect=find_with_unsorted_warnings,
                 ),
                 patch.object(dedupe_operation, "execute_xml_transaction") as execute_transaction,
             ):
@@ -293,6 +316,7 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             execute_transaction.assert_not_called()
             self.assertEqual(len(run_result.results), 1)
             platform_result = run_result.results[0]
+            self.assertEqual(platform_result.warnings, ["z-warning", "a-warning"])
             self.assertEqual(platform_result.state, MutationState.PLANNED)
             self.assertEqual(platform_result.error, "cancelled during duplicate removal")
             self.assertEqual(len(platform_result.duplicates), 1)

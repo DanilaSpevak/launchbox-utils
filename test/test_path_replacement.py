@@ -5,11 +5,13 @@ from uuid import UUID
 from unittest.mock import patch
 from launchbox_tools.operations.path_replacement import (
     _PlannedFileIndex,
+    _synchronize_path_replacement_states,
     build_replacement_value,
     run_path_replacement,
 )
 from launchbox_tools.models import (
     MutationOutcome,
+    MutationRunResult,
     MutationState,
     PathReplacement,
     PathReplacementResult,
@@ -55,6 +57,17 @@ class PathReplacementTests(LaunchBoxTestCase):
         index.record_replacement(first)
         index.record_replacement(second)
         index.record_replacement(other)
+        run_result = MutationRunResult(
+            [
+                PathReplacementResult(
+                    platform=platform,
+                    replacements=[first, second, other],
+                )
+            ],
+            MutationOutcome.FAILED,
+            files=index.files,
+        )
+        _synchronize_path_replacement_states(run_result)
 
         self.assertEqual([item.path.name for item in index.files], ["Platform.xml", "Other.xml"])
         self.assertEqual(index.files[0].state, MutationState.FAILED)
@@ -62,6 +75,32 @@ class PathReplacementTests(LaunchBoxTestCase):
         self.assertEqual(first.state, MutationState.FAILED)
         self.assertEqual(second.state, MutationState.FAILED)
         self.assertEqual(other.state, MutationState.PLANNED)
+
+    def test_planned_file_index_mass_errors_are_linear(self) -> None:
+        class ReplacementProbe:
+            state_writes = 0
+
+            def __init__(self, index: int) -> None:
+                self.xml_path = Path("Platform.xml")
+                self.error = f"invalid replacement {index}"
+
+            @property
+            def state(self) -> MutationState:
+                return MutationState.FAILED
+
+            @state.setter
+            def state(self, _value: MutationState) -> None:
+                ReplacementProbe.state_writes += 1
+
+        index = _PlannedFileIndex()
+        replacement_count = 1_000
+
+        for item_index in range(replacement_count):
+            index.record_replacement(ReplacementProbe(item_index))  # type: ignore[arg-type]
+
+        self.assertEqual(ReplacementProbe.state_writes, replacement_count)
+        self.assertEqual(index.files[0].state, MutationState.FAILED)
+        self.assertEqual(index.files[0].error, "invalid replacement 999")
 
     def test_path_replacement_cancelled_after_scan_uses_incremental_plan(self) -> None:
         with self.make_root() as temp_dir:
@@ -81,6 +120,12 @@ class PathReplacementTests(LaunchBoxTestCase):
             def cancel_after_collect(*args, **kwargs):
                 collected = real_collect(*args, **kwargs)
                 control = kwargs.get("control") or args[-1]
+                planned_files = args[-2]
+                platform = args[0]
+                planned_files.record_error(
+                    platform.database_xml,
+                    "late scan error",
+                )
                 if control is not None:
                     control.request_cancel()
                 return collected
@@ -103,8 +148,15 @@ class PathReplacementTests(LaunchBoxTestCase):
             manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["outcome"], "cancelled")
             files_by_path = {item["path"]: item for item in manifest["files"]}
+            self.assertIn("failed", {item["state"] for item in manifest["files"]})
             for change in manifest["changes"]:
                 self.assertEqual(change["state"], files_by_path[change["xml_path"]]["state"])
+            for result in run_result.results:
+                for replacement in result.replacements:
+                    self.assertEqual(
+                        replacement.state.value,
+                        files_by_path[str(replacement.xml_path)]["state"],
+                    )
             self.assertFalse(list((root / "Data").rglob("*.tmp")))
 
     def test_path_replacement_late_cancel_wins_before_failed_manifest(self) -> None:

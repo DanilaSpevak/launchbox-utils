@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -28,11 +29,10 @@ _SCAN_CHECKPOINT_INTERVAL = 256
 
 
 class _PlannedFileIndex:
-    """Incrementally keep file and change states consistent during scanning."""
+    """Incrementally keep canonical file states during scanning."""
 
     def __init__(self) -> None:
         self._files_by_path: dict[Path, MutationFileResult] = {}
-        self._replacements_by_path: dict[Path, list[PathReplacement]] = {}
 
     @property
     def files(self) -> list[MutationFileResult]:
@@ -41,11 +41,9 @@ class _PlannedFileIndex:
     def record_replacement(self, replacement: PathReplacement) -> None:
         path = replacement.xml_path.resolve(strict=False)
         file_result = self._files_by_path.setdefault(path, MutationFileResult(path))
-        self._replacements_by_path.setdefault(path, []).append(replacement)
         if replacement.error:
             self.record_error(path, replacement.error)
-        else:
-            replacement.state = file_result.state
+        replacement.state = file_result.state
 
     def record_error(self, path: Path, error: str) -> None:
         resolved_path = path.resolve(strict=False)
@@ -55,8 +53,30 @@ class _PlannedFileIndex:
         )
         file_result.state = MutationState.FAILED
         file_result.error = error
-        for replacement in self._replacements_by_path.get(resolved_path, []):
-            replacement.state = MutationState.FAILED
+
+
+def _terminal_replacements(
+    run_result: MutationRunResult[PathReplacementResult],
+) -> Iterator[tuple[PathReplacementResult, PathReplacement]]:
+    """Yield replacements after applying their file's terminal state once."""
+
+    files_by_path = {
+        file_result.path.resolve(strict=False): file_result
+        for file_result in run_result.files
+    }
+    for result in run_result.results:
+        for replacement in result.replacements:
+            file_result = files_by_path.get(replacement.xml_path.resolve(strict=False))
+            if file_result is not None:
+                replacement.state = file_result.state
+            yield result, replacement
+
+
+def _synchronize_path_replacement_states(
+    run_result: MutationRunResult[PathReplacementResult],
+) -> None:
+    for _result, _replacement in _terminal_replacements(run_result):
+        pass
 
 
 def _application_path_child(element: ET.Element) -> ET.Element | None:
@@ -396,6 +416,8 @@ def _run_path_replacement(
         if apply_changes:
             backup_root = reserve_unique_backup_root(backup_parent, backup_name)
             _write_path_replacement_manifest(run_result, backup_root)
+        else:
+            _synchronize_path_replacement_states(run_result)
         return run_result
 
     try:
@@ -433,6 +455,8 @@ def _run_path_replacement(
         if apply_changes:
             backup_root = reserve_unique_backup_root(backup_parent, backup_name)
             _write_path_replacement_manifest(run_result, backup_root)
+        else:
+            _synchronize_path_replacement_states(run_result)
         return run_result
 
     if planning_errors:
@@ -450,6 +474,8 @@ def _run_path_replacement(
             if apply_changes:
                 backup_root = reserve_unique_backup_root(backup_parent, backup_name)
                 _write_path_replacement_manifest(run_result, backup_root)
+            else:
+                _synchronize_path_replacement_states(run_result)
             return run_result
 
         run_result = MutationRunResult(
@@ -462,6 +488,8 @@ def _run_path_replacement(
         if apply_changes:
             backup_root = reserve_unique_backup_root(backup_parent, backup_name)
             _write_path_replacement_manifest(run_result, backup_root)
+        else:
+            _synchronize_path_replacement_states(run_result)
         return run_result
 
     if not apply_changes:
@@ -539,7 +567,6 @@ def _write_path_replacement_manifest(
             "state": replacement.state.value,
             "error": replacement.error or result.error,
         }
-        for result in run_result.results
-        for replacement in result.replacements
+        for result, replacement in _terminal_replacements(run_result)
     ]
     write_mutation_manifest(run_result, backup_root, "replace_paths", changes)
