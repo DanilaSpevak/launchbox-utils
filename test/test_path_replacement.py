@@ -1,20 +1,19 @@
 import hashlib
 import json
+from dataclasses import asdict, replace
 from pathlib import Path
 from uuid import UUID
 from unittest.mock import patch
 from launchbox_tools.operations.path_replacement import (
     _PlannedFileIndex,
-    _synchronize_path_replacement_states,
     build_replacement_value,
     run_path_replacement,
 )
 from launchbox_tools.models import (
+    MutationFileResult,
     MutationOutcome,
-    MutationRunResult,
     MutationState,
     PathReplacement,
-    PathReplacementResult,
     PlatformInfo,
 )
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl
@@ -57,17 +56,6 @@ class PathReplacementTests(LaunchBoxTestCase):
         index.record_replacement(first)
         index.record_replacement(second)
         index.record_replacement(other)
-        run_result = MutationRunResult(
-            [
-                PathReplacementResult(
-                    platform=platform,
-                    replacements=[first, second, other],
-                )
-            ],
-            MutationOutcome.FAILED,
-            files=index.files,
-        )
-        _synchronize_path_replacement_states(run_result)
 
         self.assertEqual([item.path.name for item in index.files], ["Platform.xml", "Other.xml"])
         self.assertEqual(index.files[0].state, MutationState.FAILED)
@@ -78,19 +66,14 @@ class PathReplacementTests(LaunchBoxTestCase):
 
     def test_planned_file_index_mass_errors_are_linear(self) -> None:
         class ReplacementProbe:
-            state_writes = 0
+            state_bindings = 0
 
             def __init__(self, index: int) -> None:
                 self.xml_path = Path("Platform.xml")
                 self.error = f"invalid replacement {index}"
 
-            @property
-            def state(self) -> MutationState:
-                return MutationState.FAILED
-
-            @state.setter
-            def state(self, _value: MutationState) -> None:
-                ReplacementProbe.state_writes += 1
+            def _bind_state_source(self, _file_result: MutationFileResult) -> None:
+                ReplacementProbe.state_bindings += 1
 
         index = _PlannedFileIndex()
         replacement_count = 1_000
@@ -98,9 +81,37 @@ class PathReplacementTests(LaunchBoxTestCase):
         for item_index in range(replacement_count):
             index.record_replacement(ReplacementProbe(item_index))  # type: ignore[arg-type]
 
-        self.assertEqual(ReplacementProbe.state_writes, replacement_count)
+        self.assertEqual(ReplacementProbe.state_bindings, replacement_count)
         self.assertEqual(index.files[0].state, MutationState.FAILED)
         self.assertEqual(index.files[0].error, "invalid replacement 999")
+
+    def test_path_replacement_state_binding_preserves_dataclass_behavior(self) -> None:
+        platform = PlatformInfo("Platform", Path("Games"), Path("Platform.xml"))
+        replacement = PathReplacement(
+            platform=platform,
+            xml_path=Path("Platform.xml"),
+            entry_type="Game",
+            title="Game",
+            old_value="old",
+            new_value="new",
+        )
+        file_result = MutationFileResult(Path("Platform.xml"))
+
+        replacement._bind_state_source(file_result)
+        file_result.state = MutationState.FAILED
+
+        self.assertEqual(replacement.state, MutationState.FAILED)
+        self.assertEqual(asdict(replacement)["state"], MutationState.FAILED)
+        self.assertIn("state=<MutationState.FAILED", repr(replacement))
+        cloned = replace(replacement)
+        self.assertEqual(cloned.state, MutationState.FAILED)
+        self.assertNotIn("_state_source", cloned.__dict__)
+        self.assertEqual(replacement, cloned)
+
+        replacement.state = MutationState.PLANNED
+
+        self.assertEqual(replacement.state, MutationState.PLANNED)
+        self.assertNotIn("_state_source", replacement.__dict__)
 
     def test_path_replacement_cancelled_after_scan_uses_incremental_plan(self) -> None:
         with self.make_root() as temp_dir:
@@ -158,6 +169,84 @@ class PathReplacementTests(LaunchBoxTestCase):
                         files_by_path[str(replacement.xml_path)]["state"],
                     )
             self.assertFalse(list((root / "Data").rglob("*.tmp")))
+
+    def test_cancelled_dry_run_does_not_rebind_states_after_cancel(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(
+                root,
+                [
+                    ("First", "Games/NES/first.zip"),
+                    ("Second", "Games/NES/second.zip"),
+                ],
+            )
+            control = OperationControl()
+            bindings_after_cancel = 0
+            iterations_after_cancel = 0
+
+            class ReplacementList(list[PathReplacement]):
+                def __iter__(self):
+                    nonlocal iterations_after_cancel
+                    if control.snapshot().cancel_requested:
+                        iterations_after_cancel += 1
+                    return super().__iter__()
+
+            from launchbox_tools.operations import path_replacement as path_module
+
+            real_collect = path_module._collect_application_path_replacements
+            real_bind = PathReplacement._bind_state_source
+
+            def track_state_binding(
+                replacement: PathReplacement,
+                file_result: MutationFileResult,
+            ) -> None:
+                nonlocal bindings_after_cancel
+                if control.snapshot().cancel_requested:
+                    bindings_after_cancel += 1
+                real_bind(replacement, file_result)
+
+            def cancel_after_collect(*args, **kwargs):
+                collected = real_collect(*args, **kwargs)
+                planned_files = args[-2]
+                platform = args[0]
+                result = args[1]
+                result.replacements = ReplacementList(result.replacements)
+                planned_files.record_error(platform.database_xml, "late scan error")
+                control.request_cancel()
+                return collected
+
+            with (
+                patch.object(
+                    PathReplacement,
+                    "_bind_state_source",
+                    new=track_state_binding,
+                ),
+                patch.object(
+                    path_module,
+                    "_collect_application_path_replacements",
+                    side_effect=cancel_after_collect,
+                ),
+            ):
+                run_result = run_path_replacement(
+                    root,
+                    root / "Games" / "NES",
+                    root / "Games" / "SNES",
+                    apply_changes=False,
+                    control=control,
+                )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            self.assertIsNone(run_result.manifest_path)
+            self.assertEqual(bindings_after_cancel, 0)
+            self.assertEqual(iterations_after_cancel, 0)
+            files_by_path = {file_result.path: file_result for file_result in run_result.files}
+            for result in run_result.results:
+                for replacement in result.replacements:
+                    self.assertEqual(
+                        replacement.state,
+                        files_by_path[replacement.xml_path.resolve(strict=False)].state,
+                    )
 
     def test_path_replacement_late_cancel_wins_before_failed_manifest(self) -> None:
         class CancelAtFinalizeControl(OperationControl):

@@ -118,6 +118,25 @@ class PathReplacement:
     state: MutationState = MutationState.PLANNED
     error: str | None = None
 
+    def __getattribute__(self, name: str):
+        # Keep the state source outside dataclass fields so repr, equality,
+        # asdict(), replace(), and the public constructor retain their shape.
+        if name == "state":
+            attributes = object.__getattribute__(self, "__dict__")
+            state_source = attributes.get("_state_source")
+            if state_source is not None:
+                return state_source.state
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name == "state":
+            object.__getattribute__(self, "__dict__").pop("_state_source", None)
+        object.__setattr__(self, name, value)
+
+    def _bind_state_source(self, file_result: MutationFileResult) -> None:
+        """Read state live from the canonical result for this XML file."""
+        object.__setattr__(self, "_state_source", file_result)
+
 
 @dataclass
 class PathReplacementResult:
