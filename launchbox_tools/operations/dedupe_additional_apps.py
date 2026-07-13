@@ -311,8 +311,6 @@ def dedupe_additional_apps_for_platform(
         entries,
         control=control,
     )
-    if control is not None:
-        control.checkpoint()
     result.duplicates = duplicates
     result.ambiguities = ambiguities
     result.warnings.extend(dedupe_warnings)
@@ -352,7 +350,21 @@ def dedupe_additional_apps_for_platform(
         )
         return result, MutationOutcome.FAILED, [], [file_result]
 
-    _remove_duplicate_elements(removable_duplicates, control=control)
+    try:
+        if control is not None:
+            control.checkpoint()
+        _remove_duplicate_elements(removable_duplicates, control=control)
+    except OperationCancelled as exc:
+        error = str(exc)
+        result.error = error
+        result.state = MutationState.PLANNED
+        result.duplicates = [
+            replace(duplicate, state=MutationState.PLANNED, error=error)
+            for duplicate in result.duplicates
+        ]
+        result.warnings.sort()
+        file_result = MutationFileResult(platform.database_xml.resolve(strict=False))
+        return result, MutationOutcome.CANCELLED, [], [file_result]
 
     transaction = execute_xml_transaction(
         [XmlMutation(platform.database_xml, tree)],
@@ -458,7 +470,7 @@ def _run_additional_apps_dedupe(
             rollback_errors.extend(platform_rollback_errors)
             file_results.extend(platform_files)
             if outcome == MutationOutcome.CANCELLED:
-                cancelled_error = "Operation cancelled"
+                cancelled_error = result.error or "Operation cancelled"
                 break
         except OperationCancelled as exc:
             cancelled_error = str(exc)

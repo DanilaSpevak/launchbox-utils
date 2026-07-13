@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from uuid import UUID
 from unittest.mock import patch
+
+import launchbox_tools.operations.dedupe_additional_apps as dedupe_operation
 from launchbox_tools.operations.dedupe_additional_apps import (
     _CheckpointCounter,
     _differing_fields,
@@ -239,6 +241,81 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.assertEqual(manifest["outcome"], "cancelled")
             self.assertEqual({item["state"] for item in manifest["files"]}, {"prepared"})
             self.assertFalse(list((root / "Data").rglob("*.tmp")))
+
+    def test_dedupe_cancelled_during_removal_preserves_planned_manifest(self) -> None:
+        class CancelDuringRemovalControl(OperationControl):
+            cancel_during_removal = False
+
+            def checkpoint(self) -> None:
+                if self.cancel_during_removal:
+                    raise OperationCancelled("cancelled during duplicate removal")
+                super().checkpoint()
+
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            self.write_games_xml_raw(
+                root,
+                self.duplicate_additional_app_xml(
+                    "game-1",
+                    "Duplicate",
+                    "Unused",
+                    "Games/NES/duplicate.zip",
+                ),
+            )
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            original = xml_path.read_bytes()
+            control = CancelDuringRemovalControl()
+            original_remove = dedupe_operation._remove_duplicate_elements
+
+            def cancel_during_real_removal(duplicates, *, control=None):
+                control.cancel_during_removal = True
+                return original_remove(duplicates, control=control)
+
+            with (
+                patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False),
+                patch.object(
+                    dedupe_operation,
+                    "_remove_duplicate_elements",
+                    side_effect=cancel_during_real_removal,
+                ),
+                patch.object(dedupe_operation, "execute_xml_transaction") as execute_transaction,
+            ):
+                run_result = run_additional_apps_dedupe(
+                    root,
+                    apply_changes=True,
+                    control=control,
+                )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            self.assertEqual(run_result.error, "cancelled during duplicate removal")
+            self.assertEqual(xml_path.read_bytes(), original)
+            execute_transaction.assert_not_called()
+            self.assertEqual(len(run_result.results), 1)
+            platform_result = run_result.results[0]
+            self.assertEqual(platform_result.state, MutationState.PLANNED)
+            self.assertEqual(platform_result.error, "cancelled during duplicate removal")
+            self.assertEqual(len(platform_result.duplicates), 1)
+            self.assertEqual(platform_result.duplicates[0].state, MutationState.PLANNED)
+            self.assertEqual(
+                platform_result.duplicates[0].error,
+                "cancelled during duplicate removal",
+            )
+            self.assertEqual(len(run_result.files), 1)
+            self.assertEqual(run_result.files[0].state, MutationState.PLANNED)
+            self.assertIsNone(run_result.files[0].error)
+
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "cancelled")
+            self.assertEqual(len(manifest["files"]), 1)
+            self.assertEqual(manifest["files"][0]["state"], "planned")
+            self.assertIsNone(manifest["files"][0]["error"])
+            self.assertEqual(len(manifest["changes"]), 1)
+            self.assertEqual(manifest["changes"][0]["state"], "planned")
+            self.assertEqual(
+                manifest["changes"][0]["error"],
+                "cancelled during duplicate removal",
+            )
 
     def test_dedupe_additional_apps_dry_run_reports_duplicates_without_changing_xml(self) -> None:
         with self.make_root() as temp_dir:

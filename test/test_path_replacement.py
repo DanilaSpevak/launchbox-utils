@@ -4,7 +4,7 @@ from pathlib import Path
 from uuid import UUID
 from unittest.mock import patch
 from launchbox_tools.operations.path_replacement import (
-    _build_planned_file_results,
+    _PlannedFileIndex,
     build_replacement_value,
     run_path_replacement,
 )
@@ -22,30 +22,48 @@ from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class PathReplacementTests(LaunchBoxTestCase):
-    def test_planned_file_aggregation_checks_cancellation_periodically(self) -> None:
+    def test_planned_file_index_propagates_late_file_error(self) -> None:
         platform = PlatformInfo("Platform", Path("Games"), Path("Platform.xml"))
-        result = PathReplacementResult(
+        first = PathReplacement(
             platform=platform,
-            replacements=[
-                PathReplacement(
-                    platform=platform,
-                    xml_path=Path(f"Platform-{index}.xml"),
-                    entry_type="Game",
-                    title=f"Game {index}",
-                    old_value="old",
-                    new_value="new",
-                )
-                for index in range(300)
-            ],
+            xml_path=Path("Platform.xml"),
+            entry_type="Game",
+            title="First",
+            old_value="old",
+            new_value="new",
         )
-        control = CancelAfterCheckpoints(2)
+        second = PathReplacement(
+            platform=platform,
+            xml_path=Path("Platform.xml"),
+            entry_type="Game",
+            title="Second",
+            old_value="old",
+            new_value="",
+            state=MutationState.FAILED,
+            error="invalid replacement",
+        )
+        other = PathReplacement(
+            platform=platform,
+            xml_path=Path("Other.xml"),
+            entry_type="Game",
+            title="Other",
+            old_value="old",
+            new_value="new",
+        )
 
-        with self.assertRaises(OperationCancelled):
-            _build_planned_file_results([result], control=control)
+        index = _PlannedFileIndex()
+        index.record_replacement(first)
+        index.record_replacement(second)
+        index.record_replacement(other)
 
-        self.assertGreaterEqual(control.checkpoint_calls, 2)
+        self.assertEqual([item.path.name for item in index.files], ["Platform.xml", "Other.xml"])
+        self.assertEqual(index.files[0].state, MutationState.FAILED)
+        self.assertEqual(index.files[0].error, "invalid replacement")
+        self.assertEqual(first.state, MutationState.FAILED)
+        self.assertEqual(second.state, MutationState.FAILED)
+        self.assertEqual(other.state, MutationState.PLANNED)
 
-    def test_path_replacement_cancelled_while_aggregating_plan(self) -> None:
+    def test_path_replacement_cancelled_after_scan_uses_incremental_plan(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
             self.write_platforms_xml(root, "Games/NES")
@@ -56,15 +74,21 @@ class PathReplacementTests(LaunchBoxTestCase):
             ]
             original_contents = {path: path.read_bytes() for path in xml_paths}
 
-            def cancel_plan(results, *, control=None):
+            from launchbox_tools.operations import path_replacement as path_module
+
+            real_collect = path_module._collect_application_path_replacements
+
+            def cancel_after_collect(*args, **kwargs):
+                collected = real_collect(*args, **kwargs)
+                control = kwargs.get("control") or args[-1]
                 if control is not None:
                     control.request_cancel()
-                return _build_planned_file_results(results, control=control)
+                return collected
 
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
                 with patch(
-                    "launchbox_tools.operations.path_replacement._build_planned_file_results",
-                    side_effect=cancel_plan,
+                    "launchbox_tools.operations.path_replacement._collect_application_path_replacements",
+                    side_effect=cancel_after_collect,
                 ):
                     run_result = run_path_replacement(
                         root,

@@ -5,8 +5,10 @@ from unittest.mock import patch
 from launchbox_tools.models import MutationOutcome, MutationState
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from launchbox_tools.safe_write import (
+    _MAX_XML_NAME_CHARACTERS,
     XmlMutation,
     _serialize_xml_tree,
+    _sort_namespaces_with_checkpoints,
     _validate_xml_file,
     _validate_xml_payload,
     _write_bytes_with_checkpoints,
@@ -33,6 +35,109 @@ class SafeWriteTests(LaunchBoxTestCase):
 
         self.assertEqual(actual, expected.getvalue())
 
+    def test_cancellable_xml_serialization_matches_complex_standard_bytes(self) -> None:
+        namespace_map = getattr(ET, "_namespace_map")
+        original_namespace_map = namespace_map.copy()
+
+        def restore_namespace_map() -> None:
+            namespace_map.clear()
+            namespace_map.update(original_namespace_map)
+
+        self.addCleanup(restore_namespace_map)
+        ET.register_namespace("sample", "urn:sample")
+        root = ET.Element("{urn:sample}Root", {"plain": 'A & B\n"quoted"'})
+        root.text = "before < child"
+        root.append(ET.Comment("comment"))
+        root[-1].tail = "comment-tail"
+        root.append(ET.ProcessingInstruction("target", "value"))
+        root[-1].tail = "pi-tail"
+        child = ET.SubElement(root, "{urn:sample}Child", {ET.QName("urn:sample", "kind"): "x"})
+        child.text = "Привет & goodbye"
+        child.tail = "after"
+        ET.SubElement(root, "Empty")
+        tree = ET.ElementTree(root)
+        expected = io.BytesIO()
+        tree.write(expected, encoding="utf-8", xml_declaration=True)
+
+        actual = _serialize_xml_tree(tree, control=OperationControl())
+
+        self.assertEqual(actual, expected.getvalue())
+
+    def test_cancellable_xml_serialization_rejects_unbounded_qname(self) -> None:
+        root = ET.Element("x" * (_MAX_XML_NAME_CHARACTERS + 1))
+
+        with self.assertRaisesRegex(ValueError, "qualified name exceeds"):
+            _serialize_xml_tree(ET.ElementTree(root), control=OperationControl())
+
+    def test_namespace_sort_matches_standard_order_and_is_cancellable(self) -> None:
+        namespaces = {
+            f"urn:namespace:{index}": f"prefix-{300 - index:04d}"
+            for index in range(300)
+        }
+        expected = sorted(namespaces.items(), key=lambda item: item[1])
+
+        actual = _sort_namespaces_with_checkpoints(namespaces, OperationControl())
+
+        self.assertEqual(actual, expected)
+        with self.assertRaises(OperationCancelled):
+            _sort_namespaces_with_checkpoints(
+                namespaces,
+                CancelAfterCheckpoints(2),
+            )
+
+    def test_xml_serialization_checks_cancellation_inside_one_large_text_node(self) -> None:
+        root = ET.Element("Root")
+        root.text = "x" * (3 * 1024 * 1024)
+        control = OperationControl()
+        escape_calls = 0
+
+        from launchbox_tools import safe_write as safe_write_module
+
+        real_escape = safe_write_module._escape_cdata_chunk
+
+        def cancel_on_second_chunk(text: str) -> str:
+            nonlocal escape_calls
+            escape_calls += 1
+            if escape_calls == 2:
+                control.request_cancel()
+            return real_escape(text)
+
+        with patch.object(
+            safe_write_module,
+            "_escape_cdata_chunk",
+            side_effect=cancel_on_second_chunk,
+        ):
+            with self.assertRaises(OperationCancelled):
+                _serialize_xml_tree(ET.ElementTree(root), control=control)
+
+        self.assertEqual(escape_calls, 2)
+
+    def test_xml_serialization_checks_cancellation_inside_one_large_attribute(self) -> None:
+        root = ET.Element("Root", {"large": "&" * (3 * 1024 * 1024)})
+        control = OperationControl()
+        escape_calls = 0
+
+        from launchbox_tools import safe_write as safe_write_module
+
+        real_escape = safe_write_module._escape_attribute_chunk
+
+        def cancel_on_second_chunk(text: str) -> str:
+            nonlocal escape_calls
+            escape_calls += 1
+            if escape_calls == 2:
+                control.request_cancel()
+            return real_escape(text)
+
+        with patch.object(
+            safe_write_module,
+            "_escape_attribute_chunk",
+            side_effect=cancel_on_second_chunk,
+        ):
+            with self.assertRaises(OperationCancelled):
+                _serialize_xml_tree(ET.ElementTree(root), control=control)
+
+        self.assertEqual(escape_calls, 2)
+
     def test_xml_serialization_checks_cancellation_during_large_tree(self) -> None:
         root = ET.Element("Root")
         for index in range(300):
@@ -48,6 +153,15 @@ class SafeWriteTests(LaunchBoxTestCase):
         payload = (
             "<Root>" + "".join(f"<Item>{index}</Item>" for index in range(300)) + "</Root>"
         ).encode("utf-8")
+        control = CancelAfterCheckpoints(3)
+
+        with self.assertRaises(OperationCancelled):
+            _validate_xml_payload(payload, control=control)
+
+        self.assertGreaterEqual(control.checkpoint_calls, 3)
+
+    def test_payload_validation_checks_cancellation_inside_one_large_text_node(self) -> None:
+        payload = b"<Root>" + b"x" * (3 * 1024 * 1024) + b"</Root>"
         control = CancelAfterCheckpoints(3)
 
         with self.assertRaises(OperationCancelled):
@@ -147,6 +261,17 @@ class SafeWriteTests(LaunchBoxTestCase):
                 _validate_xml_file(xml_path, control=control)
 
             self.assertGreaterEqual(control.checkpoint_calls, 2)
+
+    def test_stage_validation_checks_cancellation_inside_one_large_text_node(self) -> None:
+        with self.make_root() as temp_dir:
+            xml_path = Path(temp_dir) / "large-text.xml"
+            xml_path.write_bytes(b"<Root>" + b"x" * (3 * 1024 * 1024) + b"</Root>")
+            control = CancelAfterCheckpoints(4)
+
+            with self.assertRaises(OperationCancelled):
+                _validate_xml_file(xml_path, control=control)
+
+            self.assertGreaterEqual(control.checkpoint_calls, 4)
 
     def test_transaction_cancellation_during_stage_write_cleans_temp(self) -> None:
         with self.make_root() as temp_dir:

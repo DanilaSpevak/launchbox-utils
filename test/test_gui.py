@@ -198,8 +198,13 @@ class GuiTests(LaunchBoxTestCase):
 
         app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
         app.root = Mock()
-        app.log_poll_after_id = "poll"
-        app.config_save_after_id = "autosave"
+        app._destroy_started = False
+        app._after_ids = {
+            "initial_pane": "pane",
+            "logs_resize": "resize",
+            "config_save": "autosave",
+            "log_poll": "poll",
+        }
         tooltip = Mock()
         app.tooltips = [tooltip]
 
@@ -208,14 +213,86 @@ class GuiTests(LaunchBoxTestCase):
         self.assertEqual(
             [item.args for item in app.root.after_cancel.call_args_list],
             [
-                ("poll",),
+                ("pane",),
+                ("resize",),
                 ("autosave",),
+                ("poll",),
             ],
         )
-        self.assertIsNone(app.log_poll_after_id)
-        self.assertIsNone(app.config_save_after_id)
+        self.assertTrue(all(after_id is None for after_id in app._after_ids.values()))
         tooltip.cancel.assert_called_once_with()
         app.root.destroy.assert_called_once_with()
+
+        app.destroy_root()
+
+        app.root.destroy.assert_called_once_with()
+
+    def test_gui_root_callback_slots_replace_and_ignore_stale_callbacks(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.root = Mock()
+        app.root.after_idle.side_effect = ["first", "second"]
+        app._destroy_started = False
+        app._after_ids = {
+            slot: None for slot in LaunchBoxUtilsApp._AFTER_SLOTS
+        }
+        first_callback = Mock()
+        second_callback = Mock()
+
+        app.schedule_root_callback(
+            "logs_resize", 0, first_callback, idle=True
+        )
+        stale_wrapper = app.root.after_idle.call_args.args[0]
+        app.schedule_root_callback(
+            "logs_resize", 0, second_callback, idle=True
+        )
+        current_wrapper = app.root.after_idle.call_args.args[0]
+
+        app.root.after_cancel.assert_called_once_with("first")
+        stale_wrapper()
+        first_callback.assert_not_called()
+        current_wrapper()
+        second_callback.assert_called_once_with()
+        self.assertIsNone(app._after_ids["logs_resize"])
+
+    def test_gui_deferred_close_cancels_pending_resize_in_tcl(self) -> None:
+        import tkinter as tk
+
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        root = None
+        app = None
+        try:
+            try:
+                root = tk.Tk()
+            except tk.TclError as exc:
+                self.skipTest(f"Tk is not available: {exc}")
+            root.withdraw()
+            with tempfile.TemporaryDirectory() as temp_dir:
+                app = LaunchBoxUtilsApp(
+                    root, Path(temp_dir) / "launchbox_utils.ini"
+                )
+                root.update_idletasks()
+                app.worker = Mock()
+                app.worker.is_alive.return_value = False
+                app.close_requested = True
+                app.enqueue_log("Traceback: test failure")
+
+                app.process_log_queue()
+
+                self.assertTrue(app._destroy_started)
+                self.assertTrue(
+                    all(after_id is None for after_id in app._after_ids.values())
+                )
+                self.assertFalse(root.tk.call("after", "info"))
+                root = None
+        finally:
+            if root is not None:
+                if app is not None:
+                    app.destroy_root()
+                else:
+                    root.destroy()
 
     def test_gui_close_stage_requests_cancel_and_closes_after_worker_stops(self) -> None:
         from launchbox_tools.gui.app import LaunchBoxUtilsApp

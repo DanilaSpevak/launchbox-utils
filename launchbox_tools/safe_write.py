@@ -12,21 +12,30 @@ from uuid import uuid4
 from .models import MutationFileResult, MutationOutcome, MutationState, PlatformInfo
 from .operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from .runtime_checks import ensure_safe_to_mutate
+from .xml_checkpoint_io import (
+    IO_CHUNK_SIZE,
+    XML_CHECKPOINT_INTERVAL,
+    parse_xml_tree_with_checkpoints,
+)
 
 
-_IO_CHUNK_SIZE = 1024 * 1024
-_XML_CHECKPOINT_INTERVAL = 256
+_IO_CHUNK_SIZE = IO_CHUNK_SIZE
+_XML_CHECKPOINT_INTERVAL = XML_CHECKPOINT_INTERVAL
+_TEXT_CHUNK_CHARACTERS = 128 * 1024
+_MAX_XML_NAME_CHARACTERS = _TEXT_CHUNK_CHARACTERS
 
 
-class _CheckpointingTextSink:
+class _CheckpointingUtf8Writer:
     def __init__(self, control: OperationControl) -> None:
         self.buffer = io.BytesIO()
         self.control = control
         self.fragments_since_checkpoint = 0
         self.bytes_since_checkpoint = 0
 
-    def write(self, text: str) -> int:
+    def _write_piece(self, text: str) -> None:
+        self.control.checkpoint()
         payload = text.encode("utf-8")
+        self.buffer.write(payload)
         self.fragments_since_checkpoint += 1
         self.bytes_since_checkpoint += len(payload)
         if (
@@ -36,11 +45,249 @@ class _CheckpointingTextSink:
             self.control.checkpoint()
             self.fragments_since_checkpoint = 0
             self.bytes_since_checkpoint = 0
-        return self.buffer.write(payload)
+
+    def _write_chunks(self, text: str, escape) -> None:
+        if not isinstance(text, str):
+            raise TypeError(f"cannot serialize {text!r} (type {type(text).__name__})")
+        for offset in range(0, len(text), _TEXT_CHUNK_CHARACTERS):
+            chunk = text[offset : offset + _TEXT_CHUNK_CHARACTERS]
+            self.control.checkpoint()
+            self._write_piece(escape(chunk) if escape is not None else chunk)
+
+    def write_raw(self, text: str) -> None:
+        self._write_chunks(text, None)
+
+    def write_cdata(self, text: str) -> None:
+        self._write_chunks(text, _escape_cdata_chunk)
+
+    def write_attribute(self, text: str) -> None:
+        self._write_chunks(text, _escape_attribute_chunk)
 
     def getvalue(self) -> bytes:
         self.control.checkpoint()
         return self.buffer.getvalue()
+
+
+def _escape_cdata_chunk(text: str) -> str:
+    if "&" in text:
+        text = text.replace("&", "&amp;")
+    if "<" in text:
+        text = text.replace("<", "&lt;")
+    if ">" in text:
+        text = text.replace(">", "&gt;")
+    return text
+
+
+def _escape_attribute_chunk(text: str) -> str:
+    text = _escape_cdata_chunk(text)
+    if '"' in text:
+        text = text.replace('"', "&quot;")
+    if "\r" in text:
+        text = text.replace("\r", "&#13;")
+    if "\n" in text:
+        text = text.replace("\n", "&#10;")
+    if "\t" in text:
+        text = text.replace("\t", "&#09;")
+    return text
+
+
+class _CheckpointCounter:
+    def __init__(self, control: OperationControl) -> None:
+        self.control = control
+        self.count = 0
+
+    def tick(self) -> None:
+        self.count += 1
+        if self.count % _XML_CHECKPOINT_INTERVAL == 0:
+            self.control.checkpoint()
+
+
+def _collect_xml_namespaces(
+    root: ET.Element,
+    control: OperationControl,
+) -> tuple[dict[object, str | None], dict[str, str]]:
+    """Cancellable equivalent of ElementTree's namespace collection."""
+
+    qnames: dict[object, str | None] = {None: None}
+    namespaces: dict[str, str] = {}
+    namespace_map: dict[str, str] = getattr(ET, "_namespace_map", {})
+    checkpoints = _CheckpointCounter(control)
+
+    def validate_qname_length(qname: str) -> None:
+        try:
+            if len(qname) > _MAX_XML_NAME_CHARACTERS:
+                raise ValueError(
+                    "XML qualified name exceeds the cancellable serialization limit "
+                    f"of {_MAX_XML_NAME_CHARACTERS} characters"
+                )
+        except (TypeError, AttributeError) as exc:
+            raise TypeError(
+                f"cannot serialize {qname!r} (type {type(qname).__name__})"
+            ) from exc
+
+    def add_qname(qname: str) -> None:
+        try:
+            validate_qname_length(qname)
+            if qname[:1] == "{":
+                uri, tag = qname[1:].rsplit("}", 1)
+                prefix = namespaces.get(uri)
+                if prefix is None:
+                    prefix = namespace_map.get(uri)
+                    if prefix is None:
+                        prefix = f"ns{len(namespaces)}"
+                    if len(prefix) > _MAX_XML_NAME_CHARACTERS:
+                        raise ValueError(
+                            "XML namespace prefix exceeds the cancellable "
+                            f"serialization limit of {_MAX_XML_NAME_CHARACTERS} characters"
+                        )
+                    if prefix != "xml":
+                        namespaces[uri] = prefix
+                qnames[qname] = f"{prefix}:{tag}" if prefix else tag
+            else:
+                qnames[qname] = qname
+        except (TypeError, AttributeError) as exc:
+            raise TypeError(
+                f"cannot serialize {qname!r} (type {type(qname).__name__})"
+            ) from exc
+
+    control.checkpoint()
+    for element in root.iter():
+        checkpoints.tick()
+        tag = element.tag
+        if isinstance(tag, ET.QName):
+            validate_qname_length(tag.text)
+            if tag.text not in qnames:
+                add_qname(tag.text)
+        elif isinstance(tag, str):
+            validate_qname_length(tag)
+            if tag not in qnames:
+                add_qname(tag)
+        elif tag is not None and tag is not ET.Comment and tag is not ET.ProcessingInstruction:
+            raise TypeError(f"cannot serialize {tag!r} (type {type(tag).__name__})")
+
+        for key, value in element.attrib.items():
+            checkpoints.tick()
+            key_text = key.text if isinstance(key, ET.QName) else key
+            validate_qname_length(key_text)
+            if key_text not in qnames:
+                add_qname(key_text)
+            if isinstance(value, ET.QName):
+                validate_qname_length(value.text)
+                if value.text not in qnames:
+                    add_qname(value.text)
+        text = element.text
+        if isinstance(text, ET.QName):
+            validate_qname_length(text.text)
+            if text.text not in qnames:
+                add_qname(text.text)
+    control.checkpoint()
+    return qnames, namespaces
+
+
+def _sort_namespaces_with_checkpoints(
+    namespaces: dict[str, str],
+    control: OperationControl,
+) -> list[tuple[str, str]]:
+    """Stable merge sort by prefix without an uninterruptible TimSort call."""
+
+    checkpoints = _CheckpointCounter(control)
+    items: list[tuple[str, str]] = []
+    for item in namespaces.items():
+        checkpoints.tick()
+        items.append(item)
+
+    width = 1
+    while width < len(items):
+        merged: list[tuple[str, str]] = []
+        for start in range(0, len(items), width * 2):
+            middle = min(start + width, len(items))
+            end = min(start + width * 2, len(items))
+            left = start
+            right = middle
+            while left < middle and right < end:
+                control.checkpoint()
+                if items[left][1] <= items[right][1]:
+                    merged.append(items[left])
+                    left += 1
+                else:
+                    merged.append(items[right])
+                    right += 1
+            while left < middle:
+                checkpoints.tick()
+                merged.append(items[left])
+                left += 1
+            while right < end:
+                checkpoints.tick()
+                merged.append(items[right])
+                right += 1
+        items = merged
+        width *= 2
+    control.checkpoint()
+    return items
+
+
+def _serialize_xml_element(
+    writer: _CheckpointingUtf8Writer,
+    element: ET.Element,
+    qnames: dict[object, str | None],
+    namespaces: dict[str, str] | None,
+    checkpoints: _CheckpointCounter,
+) -> None:
+    checkpoints.tick()
+    tag = element.tag
+    text = element.text
+    if tag is ET.Comment:
+        writer.write_raw("<!--")
+        writer.write_raw(str(text))
+        writer.write_raw("-->")
+    elif tag is ET.ProcessingInstruction:
+        writer.write_raw("<?")
+        writer.write_raw(str(text))
+        writer.write_raw("?>")
+    else:
+        serialized_tag = qnames[tag]
+        if serialized_tag is None:
+            if text:
+                writer.write_cdata(text)
+            for child in element:
+                _serialize_xml_element(writer, child, qnames, None, checkpoints)
+        else:
+            writer.write_raw("<")
+            writer.write_raw(serialized_tag)
+            if namespaces:
+                for uri, prefix in _sort_namespaces_with_checkpoints(
+                    namespaces,
+                    writer.control,
+                ):
+                    writer.write_raw(" xmlns")
+                    if prefix:
+                        writer.write_raw(":")
+                        writer.write_raw(prefix)
+                    writer.write_raw('="')
+                    writer.write_attribute(uri)
+                    writer.write_raw('"')
+            for key, value in element.attrib.items():
+                checkpoints.tick()
+                key_text = key.text if isinstance(key, ET.QName) else key
+                value_text = qnames[value.text] if isinstance(value, ET.QName) else value
+                writer.write_raw(" ")
+                writer.write_raw(qnames[key_text])
+                writer.write_raw('="')
+                writer.write_attribute(value_text)
+                writer.write_raw('"')
+            if text or len(element):
+                writer.write_raw(">")
+                if text:
+                    writer.write_cdata(text)
+                for child in element:
+                    _serialize_xml_element(writer, child, qnames, None, checkpoints)
+                writer.write_raw("</")
+                writer.write_raw(serialized_tag)
+                writer.write_raw(">")
+            else:
+                writer.write_raw(" />")
+    if element.tail:
+        writer.write_cdata(element.tail)
 
 
 def _serialize_xml_tree(
@@ -54,9 +301,18 @@ def _serialize_xml_tree(
         return buffer.getvalue()
 
     control.checkpoint()
-    sink = _CheckpointingTextSink(control)
-    tree.write(sink, encoding="unicode", xml_declaration=True)
-    return sink.getvalue()
+    root = tree.getroot()
+    qnames, namespaces = _collect_xml_namespaces(root, control)
+    writer = _CheckpointingUtf8Writer(control)
+    writer.write_raw("<?xml version='1.0' encoding='utf-8'?>\n")
+    _serialize_xml_element(
+        writer,
+        root,
+        qnames,
+        namespaces,
+        _CheckpointCounter(control),
+    )
+    return writer.getvalue()
 
 
 def _write_bytes_with_checkpoints(
@@ -83,12 +339,7 @@ def _validate_xml_file(
         ET.parse(path)
         return
 
-    control.checkpoint()
-    iterator = ET.iterparse(path, events=("end",))
-    for index, _event in enumerate(iterator, start=1):
-        if index % _XML_CHECKPOINT_INTERVAL == 0:
-            control.checkpoint()
-    control.checkpoint()
+    parse_xml_tree_with_checkpoints(path, control)
 
 
 def _validate_xml_payload(

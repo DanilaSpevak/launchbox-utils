@@ -27,6 +27,38 @@ from ..xml_repository import child_text, load_platforms, local_name, parse_xml_t
 _SCAN_CHECKPOINT_INTERVAL = 256
 
 
+class _PlannedFileIndex:
+    """Incrementally keep file and change states consistent during scanning."""
+
+    def __init__(self) -> None:
+        self._files_by_path: dict[Path, MutationFileResult] = {}
+        self._replacements_by_path: dict[Path, list[PathReplacement]] = {}
+
+    @property
+    def files(self) -> list[MutationFileResult]:
+        return list(self._files_by_path.values())
+
+    def record_replacement(self, replacement: PathReplacement) -> None:
+        path = replacement.xml_path.resolve(strict=False)
+        file_result = self._files_by_path.setdefault(path, MutationFileResult(path))
+        self._replacements_by_path.setdefault(path, []).append(replacement)
+        if replacement.error:
+            self.record_error(path, replacement.error)
+        else:
+            replacement.state = file_result.state
+
+    def record_error(self, path: Path, error: str) -> None:
+        resolved_path = path.resolve(strict=False)
+        file_result = self._files_by_path.setdefault(
+            resolved_path,
+            MutationFileResult(resolved_path),
+        )
+        file_result.state = MutationState.FAILED
+        file_result.error = error
+        for replacement in self._replacements_by_path.get(resolved_path, []):
+            replacement.state = MutationState.FAILED
+
+
 def _application_path_child(element: ET.Element) -> ET.Element | None:
     for child in element:
         if local_name(child.tag) == "ApplicationPath":
@@ -96,6 +128,7 @@ def _append_replacement(
     source_value: str,
     apply_changes: bool,
     target_element: ET.Element,
+    planned_files: _PlannedFileIndex,
 ) -> bool:
     new_value, error = build_replacement_value(root, old_path, new_path, source_value)
     if new_value is None and error is None:
@@ -112,6 +145,7 @@ def _append_replacement(
         error=error,
     )
     result.replacements.append(replacement)
+    planned_files.record_replacement(replacement)
     if error:
         result.warnings.append(error)
         return False
@@ -128,6 +162,7 @@ def _collect_platform_folder_replacements(
     new_path: Path,
     apply_changes: bool,
     platform_filter: str | None,
+    planned_files: _PlannedFileIndex,
     control: OperationControl | None = None,
 ) -> bool:
     changed = False
@@ -163,6 +198,7 @@ def _collect_platform_folder_replacements(
                 folder_value,
                 apply_changes,
                 folder_element,
+                planned_files,
             )
             or changed
         )
@@ -176,6 +212,7 @@ def _collect_application_path_replacements(
     old_path: Path,
     new_path: Path,
     apply_changes: bool,
+    planned_files: _PlannedFileIndex,
     control: OperationControl | None = None,
 ) -> tuple[ET.ElementTree | None, bool]:
     if control is not None:
@@ -218,6 +255,7 @@ def _collect_application_path_replacements(
                 application_path,
                 apply_changes,
                 path_element,
+                planned_files,
             )
             or changed
         )
@@ -257,45 +295,6 @@ def run_path_replacement(
         )
 
 
-def _build_planned_file_results(
-    results: list[PathReplacementResult],
-    *,
-    control: OperationControl | None = None,
-) -> list[MutationFileResult]:
-    planned_files_by_path: dict[Path, MutationFileResult] = {}
-    item_count = 0
-    if control is not None:
-        control.checkpoint()
-    for result in results:
-        item_count += 1
-        if control is not None and item_count % _SCAN_CHECKPOINT_INTERVAL == 0:
-            control.checkpoint()
-        for replacement in result.replacements:
-            item_count += 1
-            if control is not None and item_count % _SCAN_CHECKPOINT_INTERVAL == 0:
-                control.checkpoint()
-            path = replacement.xml_path.resolve(strict=False)
-            file_result = planned_files_by_path.setdefault(path, MutationFileResult(path))
-            if replacement.error:
-                file_result.state = MutationState.FAILED
-                file_result.error = replacement.error
-        if result.error:
-            path = result.platform.database_xml.resolve(strict=False)
-            file_result = planned_files_by_path.setdefault(path, MutationFileResult(path))
-            file_result.state = MutationState.FAILED
-            file_result.error = result.error
-
-    for result in results:
-        for replacement in result.replacements:
-            item_count += 1
-            if control is not None and item_count % _SCAN_CHECKPOINT_INTERVAL == 0:
-                control.checkpoint()
-            replacement.state = planned_files_by_path[
-                replacement.xml_path.resolve(strict=False)
-            ].state
-    return list(planned_files_by_path.values())
-
-
 def _run_path_replacement(
     root: Path,
     old_path: Path,
@@ -313,6 +312,7 @@ def _run_path_replacement(
     platforms: list[PlatformInfo] = []
     result_by_platform: dict[str, PathReplacementResult] = {}
     results: list[PathReplacementResult] = []
+    planned_file_index = _PlannedFileIndex()
     platforms_xml = root / "Data" / "Platforms.xml"
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_parent = root / "Data" / "Backups"
@@ -355,6 +355,7 @@ def _run_path_replacement(
             new_path,
             apply_changes,
             platform_filter,
+            planned_file_index,
             control,
         )
 
@@ -371,16 +372,18 @@ def _run_path_replacement(
                     old_path,
                     new_path,
                     apply_changes,
+                    planned_file_index,
                     control,
                 )
                 if tree is not None:
                     platform_trees.append((result, tree, changed))
             except (ET.ParseError, OSError) as exc:
                 result.error = str(exc)
+                planned_file_index.record_error(result.platform.database_xml, result.error)
     except OperationCancelled as exc:
         # Cancellation has won; finish the terminal snapshot without further
         # checkpoints so its manifest covers every replacement found by scan.
-        planned_files = _build_planned_file_results(results)
+        planned_files = planned_file_index.files
         run_result = MutationRunResult(
             results,
             MutationOutcome.CANCELLED,
@@ -415,9 +418,9 @@ def _run_path_replacement(
                     control.checkpoint()
                 if replacement.error:
                     planning_errors.append(replacement.error)
-        planned_files = _build_planned_file_results(results, control=control)
+        planned_files = planned_file_index.files
     except OperationCancelled as exc:
-        planned_files = _build_planned_file_results(results)
+        planned_files = planned_file_index.files
         run_result = MutationRunResult(
             results,
             MutationOutcome.CANCELLED,
@@ -484,6 +487,16 @@ def _run_path_replacement(
         if changed
     )
     transaction = execute_xml_transaction(mutations, backup_root, run_id, control=control)
+    late_cancel_error: str | None = None
+    if control is not None:
+        if transaction.outcome == MutationOutcome.CANCELLED:
+            control.set_phase(OperationPhase.FINALIZE)
+        else:
+            try:
+                control.begin_finalize()
+            except OperationCancelled as exc:
+                late_cancel_error = str(exc)
+
     transaction_files_by_path = {file_result.path: file_result for file_result in transaction.files}
 
     for result in results:
@@ -497,16 +510,6 @@ def _run_path_replacement(
                 replacement.state = file_result.state
         if transaction.outcome != MutationOutcome.SUCCESS and result.replacements:
             result.error = transaction.error
-
-    late_cancel_error: str | None = None
-    if control is not None:
-        if transaction.outcome == MutationOutcome.CANCELLED:
-            control.set_phase(OperationPhase.FINALIZE)
-        else:
-            try:
-                control.begin_finalize()
-            except OperationCancelled as exc:
-                late_cancel_error = str(exc)
 
     run_result = MutationRunResult(
         results,

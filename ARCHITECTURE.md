@@ -31,6 +31,7 @@ launchbox_tools/
   runtime_checks.py             # LaunchBox process and XML file lock checks
   mutation_lock.py              # per-installation interprocess apply lock
   operation_lifecycle.py        # operation phases and pre-commit cancellation
+  xml_checkpoint_io.py          # byte-bounded cancellable XML parsing
   safe_write.py                 # backup and safe XML write helpers
   operations/
     audit.py                    # read-only ROM audit
@@ -55,6 +56,7 @@ launchbox_tools/
 - `runtime_checks.py` owns pre-mutation safety checks for LaunchBox process state and XML file locks.
 - `mutation_lock.py` owns the installation-wide interprocess apply lock.
 - `operation_lifecycle.py` owns thread-safe operation phases, cooperative cancellation, and the irreversible commit boundary.
+- `xml_checkpoint_io.py` owns byte-bounded readers shared by cancellable XML parsing and validation.
 - `safe_write.py` owns backup and safe XML replacement behavior.
 - `mutation_manifest.py` writes the final apply manifest independently from user reports.
 - `config.py` owns `launchbox_utils.ini` parsing and saving.
@@ -127,7 +129,9 @@ Only one mutation may run for a LaunchBox installation at a time. Apply operatio
 
 `replace-paths` treats all changed XML files as one transaction. Additional Apps dedupe treats each platform XML as an independent transaction, so one failed platform does not undo successful changes to another platform. Mutation runs expose `dry_run`, `success`, `partial`, `failed`, `rolled_back`, or `cancelled`.
 
-Long-running operations may receive an optional `OperationControl`. It publishes `scan`, `stage`, `commit`, `rollback`, `finalize`, and `finished` phases and provides cooperative cancellation checkpoints. XML parsing, recursive entry analysis, planning aggregation, and serialization check at least every 256 events or fragments; payload validation, hashing, backup copies, and staged writes check at least every 1 MiB, while filesystem existence probes check between paths. Cancellation races atomically with both commit and finalization: a cancellation request either wins while work is still cancellable or is rejected after the operation enters a protected terminal phase. A cancelled staged transaction keeps verified backups, removes temporary files, leaves XML unchanged, preserves `planned` / `prepared` file states, and records `outcome: cancelled` in the apply manifest.
+Long-running operations may receive an optional `OperationControl`. It publishes `scan`, `stage`, `commit`, `rollback`, `finalize`, and `finished` phases and provides cooperative cancellation checkpoints. XML parsing and validation use byte-bounded readers, and cancellable serialization splits text, attributes, escaping, and UTF-8 encoding into chunks whose encoded output is at most 1 MiB. Recursive entry analysis and namespace/planning traversal check at least every 256 events or fragments; namespace ordering is checkpoint-aware, and pathological XML names longer than 128 KiB are rejected before serialization. Hashing, backup copies, and staged writes check at least every 1 MiB, while filesystem existence probes check between paths. Cancellation races atomically with both commit and finalization: a cancellation request either wins while work is still cancellable or is rejected after the operation enters a protected terminal phase. A cancelled staged transaction keeps verified backups, removes temporary files, leaves XML unchanged, preserves `planned` / `prepared` file states, and records `outcome: cancelled` in the apply manifest.
+
+Path replacement maintains its planned file index incrementally during scan, so accepted cancellation never repeats full-plan aggregation. A cancelled apply still writes one complete, atomic manifest during protected finalization. That required manifest serialization is intentionally allowed to take O(N) time in the number of changes; incomplete manifests and background finalization are not used.
 
 `MutationState` is the only source of truth for individual files and changes: `planned` before preparation, `prepared` after backup/stage validation, `committed` after atomic replacement, `failed` for a failed file step, and `rolled_back` after successful restoration. A schema-version 2 `manifest.json` in the apply backup root records the run UUID, outcome, file states, original paths and SHA-256 hashes, backup paths, diagnostics, and operation-specific changes. Each hash is verified against the exclusive backup before staging begins. Manifest writer failures are reported separately and never rewrite the known XML mutation state.
 
@@ -194,7 +198,7 @@ Mutation CSV/TXT reports use `state`, not an independent `applied` flag, and rep
 - Long operations run in a background thread.
 - GUI workers are non-daemon threads, so process exit cannot interrupt commit or rollback.
 - Worker logs are passed to the UI via `queue.Queue`.
-- `WM_DELETE_WINDOW` closes immediately while idle. During `scan` or `stage`, it asks for confirmation, requests cooperative cancellation, and closes only after the worker exits. During commit, rollback, or finalization, the close request is deferred and the window closes automatically only after the protected worker finishes. GUI-owned `after()` callbacks are cancelled before root destruction so no Tcl callback can outlive its registered command.
+- `WM_DELETE_WINDOW` closes immediately while idle. During `scan` or `stage`, it asks for confirmation, requests cooperative cancellation, and closes only after the worker exits. During commit, rollback, or finalization, the close request is deferred and the window closes automatically only after the protected worker finishes. GUI-owned `after()` and `after_idle()` callbacks use named, latest-wins slots and are cancelled before root destruction so no Tcl callback can outlive its registered command.
 - Path edits in the GUI are saved back to `launchbox_utils.ini`.
 - Apply operations run `ensure_safe_to_mutate()` on the UI thread before confirmation and before starting the worker.
 

@@ -6,16 +6,14 @@ from pathlib import Path
 from .models import GameEntry, PlatformInfo
 from .operation_lifecycle import OperationControl
 from .paths import platform_database_path, resolve_launchbox_path
-
-
-_XML_CHECKPOINT_INTERVAL = 256
+from .xml_checkpoint_io import XML_CHECKPOINT_INTERVAL, parse_xml_tree_with_checkpoints
 
 
 def _checkpoint_periodically(
     control: OperationControl | None,
     index: int,
 ) -> None:
-    if control is not None and index % _XML_CHECKPOINT_INTERVAL == 0:
+    if control is not None and index % XML_CHECKPOINT_INTERVAL == 0:
         control.checkpoint()
 
 
@@ -46,12 +44,7 @@ def parse_xml_tree(
     if control is None:
         return ET.parse(path)
 
-    control.checkpoint()
-    iterator = ET.iterparse(path, events=("end",))
-    for index, _event in enumerate(iterator, start=1):
-        _checkpoint_periodically(control, index)
-    control.checkpoint()
-    return ET.ElementTree(iterator.root)
+    return parse_xml_tree_with_checkpoints(path, control)
 
 
 def load_platforms(

@@ -1,3 +1,4 @@
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from launchbox_tools.operation_lifecycle import OperationCancelled
 from launchbox_tools.xml_repository import (
@@ -25,6 +26,27 @@ class XmlRepositoryTests(LaunchBoxTestCase):
                 parse_xml_tree(xml_path, control=control)
 
             self.assertGreaterEqual(control.checkpoint_calls, 2)
+
+    def test_parse_xml_tree_checks_cancellation_inside_one_large_text_node(self) -> None:
+        with self.make_root() as temp_dir:
+            xml_path = Path(temp_dir) / "large-text.xml"
+            xml_path.write_bytes(b"<Root>" + b"x" * (3 * 1024 * 1024) + b"</Root>")
+            control = CancelAfterCheckpoints(4)
+
+            with self.assertRaises(OperationCancelled):
+                parse_xml_tree(xml_path, control=control)
+
+            self.assertGreaterEqual(control.checkpoint_calls, 4)
+
+    def test_parse_xml_tree_preserves_parse_error_across_read_boundary(self) -> None:
+        with self.make_root() as temp_dir:
+            xml_path = Path(temp_dir) / "malformed.xml"
+            xml_path.write_bytes(
+                b"<Root>" + b"x" * (1024 * 1024 - len(b"<Root>")) + b"<Broken></Root>"
+            )
+
+            with self.assertRaises(ET.ParseError):
+                parse_xml_tree(xml_path, control=CancelAfterCheckpoints(10_000))
 
     def test_load_application_entries_checks_cancellation_during_iteration(self) -> None:
         with self.make_root() as temp_dir:

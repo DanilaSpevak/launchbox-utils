@@ -87,6 +87,8 @@ class Tooltip:
 
 
 class LaunchBoxUtilsApp:
+    _AFTER_SLOTS = ("initial_pane", "logs_resize", "config_save", "log_poll")
+
     def __init__(self, root: tk.Tk, config_path: Path) -> None:
         self.root = root
         self.config_path = config_path
@@ -95,8 +97,10 @@ class LaunchBoxUtilsApp:
         self.worker: threading.Thread | None = None
         self.operation_control: OperationControl | None = None
         self.close_requested = False
-        self.log_poll_after_id: str | None = None
-        self.config_save_after_id: str | None = None
+        self._destroy_started = False
+        self._after_ids: dict[str, str | None] = {
+            slot: None for slot in self._AFTER_SLOTS
+        }
         self.tooltips: list[Tooltip] = []
         self.current_operation_key = tk.StringVar(value="audit")
         self.operation_buttons: dict[str, ttk.Button] = {}
@@ -130,7 +134,55 @@ class LaunchBoxUtilsApp:
         self.setup_config_autosave()
         self.apply_language()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.log_poll_after_id = self.root.after(100, self.process_log_queue)
+        self.schedule_root_callback("log_poll", 100, self.process_log_queue)
+
+    def schedule_root_callback(
+        self,
+        slot: str,
+        delay_ms: int,
+        callback: Callable[[], None],
+        *,
+        idle: bool = False,
+    ) -> str | None:
+        if getattr(self, "_destroy_started", False):
+            return None
+        after_ids = getattr(self, "_after_ids", None)
+        if after_ids is None:
+            after_ids = {name: None for name in self._AFTER_SLOTS}
+            self._after_ids = after_ids
+        if slot not in after_ids:
+            raise ValueError(f"Unknown root callback slot: {slot}")
+        self.cancel_root_callback(slot)
+
+        after_id: str | None = None
+
+        def invoke() -> None:
+            if self._after_ids.get(slot) != after_id:
+                return
+            self._after_ids[slot] = None
+            if getattr(self, "_destroy_started", False):
+                return
+            callback()
+
+        if idle:
+            after_id = self.root.after_idle(invoke)
+        else:
+            after_id = self.root.after(delay_ms, invoke)
+        after_ids[slot] = after_id
+        return after_id
+
+    def cancel_root_callback(self, slot: str) -> None:
+        after_ids = getattr(self, "_after_ids", None)
+        if after_ids is None:
+            return
+        after_id = after_ids.get(slot)
+        if after_id is None:
+            return
+        after_ids[slot] = None
+        try:
+            self.root.after_cancel(after_id)
+        except tk.TclError:
+            pass
 
     def t(self, key: str) -> str:
         return translate(self.language, key)
@@ -160,7 +212,9 @@ class LaunchBoxUtilsApp:
         logs_area = self.build_logs_area(self.main_pane)
         self.main_pane.add(task_area, weight=1)
         self.main_pane.add(logs_area, weight=0)
-        self.root.after_idle(self.set_initial_pane_sizes)
+        self.schedule_root_callback(
+            "initial_pane", 0, self.set_initial_pane_sizes, idle=True
+        )
         self.root.minsize(900, 620)
         self.show_operation(self.current_operation_key.get())
 
@@ -306,7 +360,9 @@ class LaunchBoxUtilsApp:
             self.clear_logs_button.grid_remove()
         self.logs_collapsed = True
         self.update_logs_toggle_text()
-        self.root.after_idle(self.resize_collapsed_logs)
+        self.schedule_root_callback(
+            "logs_resize", 0, self.resize_collapsed_logs, idle=True
+        )
 
     def expand_logs(self) -> None:
         if self.logs_body is not None:
@@ -315,7 +371,9 @@ class LaunchBoxUtilsApp:
             self.clear_logs_button.grid()
         self.logs_collapsed = False
         self.update_logs_toggle_text()
-        self.root.after_idle(self.resize_expanded_logs)
+        self.schedule_root_callback(
+            "logs_resize", 0, self.resize_expanded_logs, idle=True
+        )
 
     def resize_collapsed_logs(self) -> None:
         if self.main_pane is None:
@@ -620,12 +678,9 @@ class LaunchBoxUtilsApp:
         self.audit_output_mode_var.trace_add("write", self.schedule_config_save)
 
     def schedule_config_save(self, *_args) -> None:
-        if self.config_save_after_id is not None:
-            self.root.after_cancel(self.config_save_after_id)
-        self.config_save_after_id = self.root.after(600, self.autosave_config)
+        self.schedule_root_callback("config_save", 600, self.autosave_config)
 
     def autosave_config(self) -> None:
-        self.config_save_after_id = None
         self.save_config(log=False)
 
     def browse_launchbox_folder(self) -> None:
@@ -1016,7 +1071,6 @@ class LaunchBoxUtilsApp:
         self.log_queue.put(message)
 
     def process_log_queue(self) -> None:
-        self.log_poll_after_id = None
         while True:
             try:
                 message = self.log_queue.get_nowait()
@@ -1031,17 +1085,14 @@ class LaunchBoxUtilsApp:
             if self.close_requested:
                 self.destroy_root()
                 return
-        self.log_poll_after_id = self.root.after(100, self.process_log_queue)
+        self.schedule_root_callback("log_poll", 100, self.process_log_queue)
 
     def destroy_root(self) -> None:
-        for attribute in ("log_poll_after_id", "config_save_after_id"):
-            after_id = getattr(self, attribute, None)
-            if after_id is not None:
-                try:
-                    self.root.after_cancel(after_id)
-                except tk.TclError:
-                    pass
-                setattr(self, attribute, None)
+        if getattr(self, "_destroy_started", False):
+            return
+        self._destroy_started = True
+        for slot in self._AFTER_SLOTS:
+            self.cancel_root_callback(slot)
         for tooltip in getattr(self, "tooltips", []):
             try:
                 tooltip.cancel()
