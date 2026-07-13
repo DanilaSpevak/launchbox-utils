@@ -1,9 +1,12 @@
 import tempfile
+import queue
+import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 from launchbox_tools.config import load_configured_language, save_interface_language
 from launchbox_tools.gui.translations import translate
 from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationRunResult, MutationState
+from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from launchbox_tools.runtime_checks import MutationBlockedError
 
 from test.support import LaunchBoxTestCase
@@ -20,7 +23,7 @@ class GuiTests(LaunchBoxTestCase):
         app.audit_output_mode_var.get.return_value = "all"
         app.enqueue_log = messages.append
         app.t = lambda key: translate("en", key)
-        app.start_worker = lambda _message, worker: worker()
+        app.start_worker = lambda _message, worker: worker(OperationControl())
         error = MutationBlockedError(
             "busy",
             reason="mutation_in_progress",
@@ -59,6 +62,7 @@ class GuiTests(LaunchBoxTestCase):
         self.assertIn("резервной копии", translate("ru", "dedupe_apply_tooltip"))
         self.assertEqual(translate("ru", "outcome_partial"), "Выполнено частично")
         self.assertEqual(translate("en", "outcome_rolled_back"), "Rolled back")
+        self.assertEqual(translate("ru", "outcome_cancelled"), "Отменено")
         self.assertEqual(translate("ru", "state_committed"), "Зафиксировано XML-файлов")
         self.assertIn("LaunchBox", translate("ru", "mutation_blocked_launchbox"))
         self.assertEqual(translate("missing", "audit_group"), "Audit")
@@ -108,7 +112,7 @@ class GuiTests(LaunchBoxTestCase):
         app.audit_output_mode_var.get.return_value = "all"
         app.enqueue_log = messages.append
         app.t = lambda key: translate("en", key)
-        app.start_worker = lambda _message, worker: worker()
+        app.start_worker = lambda _message, worker: worker(OperationControl())
         run_result = MutationRunResult(
             [],
             MutationOutcome.SUCCESS,
@@ -148,7 +152,7 @@ class GuiTests(LaunchBoxTestCase):
         app.audit_output_mode_var.get.return_value = "all"
         app.enqueue_log = messages.append
         app.t = lambda key: translate("en", key)
-        app.start_worker = lambda _message, worker: worker()
+        app.start_worker = lambda _message, worker: worker(OperationControl())
         run_result = MutationRunResult(
             [],
             MutationOutcome.ROLLED_BACK,
@@ -176,6 +180,125 @@ class GuiTests(LaunchBoxTestCase):
         self.assertIn("Traceback (most recent call last)", joined)
         self.assertIn("RuntimeError: report bug", joined)
         self.assertNotIn("Reports written to", joined)
+
+    def test_gui_close_idle_destroys_window_immediately(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.worker = None
+        app.root = Mock()
+
+        app.on_close()
+
+        app.root.destroy.assert_called_once_with()
+
+    def test_gui_close_stage_requests_cancel_and_closes_after_worker_stops(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.worker = Mock()
+        app.worker.is_alive.return_value = True
+        app.operation_control = OperationControl()
+        app.operation_control.set_phase(OperationPhase.STAGE)
+        app.close_requested = False
+        app.root = Mock()
+        app.append_log = Mock()
+        app.log_queue = queue.Queue()
+        app.t = lambda key: translate("en", key)
+
+        with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
+            app.on_close()
+
+        self.assertTrue(app.close_requested)
+        self.assertTrue(app.operation_control.snapshot().cancel_requested)
+        app.root.destroy.assert_not_called()
+
+        app.worker.is_alive.return_value = False
+        app.process_log_queue()
+
+        app.root.destroy.assert_called_once_with()
+        app.root.after.assert_not_called()
+
+    def test_gui_close_scan_can_keep_operation_running(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.worker = Mock()
+        app.worker.is_alive.return_value = True
+        app.operation_control = OperationControl()
+        app.close_requested = False
+        app.root = Mock()
+        app.t = lambda key: translate("en", key)
+
+        with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=False):
+            app.on_close()
+
+        self.assertFalse(app.close_requested)
+        self.assertFalse(app.operation_control.snapshot().cancel_requested)
+        app.root.destroy.assert_not_called()
+
+    def test_gui_close_is_blocked_during_commit_and_rollback(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        for phase in (OperationPhase.COMMIT, OperationPhase.ROLLBACK):
+            with self.subTest(phase=phase):
+                app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+                app.worker = Mock()
+                app.worker.is_alive.return_value = True
+                app.operation_control = OperationControl()
+                app.operation_control.begin_commit()
+                app.operation_control.set_phase(phase)
+                app.close_requested = False
+                app.root = Mock()
+                app.t = lambda key: translate("en", key)
+
+                with patch("launchbox_tools.gui.app.messagebox.showwarning") as showwarning:
+                    app.on_close()
+
+                showwarning.assert_called_once()
+                self.assertFalse(app.operation_control.request_cancel())
+                app.root.destroy.assert_not_called()
+
+    def test_gui_worker_is_non_daemon(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        release = threading.Event()
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.worker = None
+        app.operation_control = None
+        app.save_config = Mock()
+        app.append_log = Mock()
+        app.t = lambda key: translate("en", key)
+
+        app.start_worker("start", lambda _control: release.wait(timeout=2))
+        try:
+            self.assertIsNotNone(app.worker)
+            self.assertFalse(app.worker.daemon)
+        finally:
+            release.set()
+            app.worker.join(timeout=2)
+
+        self.assertFalse(app.worker.is_alive())
+
+    def test_gui_cancelled_audit_skips_reports_without_traceback(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        messages: list[str] = []
+        app.validate_paths = Mock(return_value=(Path("C:/LaunchBox"), Path("C:/Reports")))
+        app.audit_output_mode_var = Mock()
+        app.audit_output_mode_var.get.return_value = "all"
+        app.enqueue_log = messages.append
+        app.t = lambda key: translate("en", key)
+        app.start_worker = lambda _message, worker: worker(OperationControl())
+
+        with patch("launchbox_tools.gui.app.run_audit", side_effect=OperationCancelled()):
+            with patch("launchbox_tools.gui.app.write_reports") as write_reports:
+                app.run_audit_operation()
+
+        write_reports.assert_not_called()
+        self.assertIn("Cancelled", messages)
+        self.assertNotIn("Traceback", "\n".join(messages))
 
     def test_gui_language_button_toggles_and_saves_language(self) -> None:
         import tkinter as tk

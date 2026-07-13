@@ -20,7 +20,8 @@ from ..config import (
     save_raw_path_config,
 )
 from ..diagnostics import describe_exception
-from ..models import MutationRunResult, MutationState
+from ..models import MutationOutcome, MutationRunResult, MutationState
+from ..operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from ..operations.audit import run_audit
 from ..operations.dedupe_additional_apps import run_additional_apps_dedupe
 from ..operations.path_replacement import run_path_replacement
@@ -92,6 +93,8 @@ class LaunchBoxUtilsApp:
         self.language = resolve_initial_language(config_path)
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.worker: threading.Thread | None = None
+        self.operation_control: OperationControl | None = None
+        self.close_requested = False
         self.config_save_after_id: str | None = None
         self.tooltips: list[Tooltip] = []
         self.current_operation_key = tk.StringVar(value="audit")
@@ -125,6 +128,7 @@ class LaunchBoxUtilsApp:
         self.build_form()
         self.setup_config_autosave()
         self.apply_language()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.process_log_queue)
 
     def t(self, key: str) -> str:
@@ -699,14 +703,53 @@ class LaunchBoxUtilsApp:
     def is_busy(self) -> bool:
         return self.worker is not None and self.worker.is_alive()
 
-    def start_worker(self, start_message: str, target) -> None:
+    def start_worker(
+        self,
+        start_message: str,
+        target: Callable[[OperationControl], None],
+    ) -> None:
         if self.is_busy():
             messagebox.showwarning(self.t("failed"), self.t("busy"))
             return
         self.save_config(log=False)
         self.append_log(start_message)
-        self.worker = threading.Thread(target=target, daemon=True)
+        control = OperationControl()
+        self.operation_control = control
+
+        def worker_wrapper() -> None:
+            try:
+                target(control)
+            finally:
+                control.finish()
+
+        self.worker = threading.Thread(target=worker_wrapper, daemon=False)
         self.worker.start()
+
+    def on_close(self) -> None:
+        if not self.is_busy():
+            self.root.destroy()
+            return
+
+        control = self.operation_control
+        if control is None:
+            messagebox.showwarning(self.t("close_blocked_title"), self.t("close_blocked_message"))
+            return
+
+        snapshot = control.snapshot()
+        if snapshot.commit_started:
+            messagebox.showwarning(self.t("close_blocked_title"), self.t("close_blocked_message"))
+            return
+        if self.close_requested:
+            messagebox.showinfo(self.t("cancel_pending_title"), self.t("cancel_pending_message"))
+            return
+        if not messagebox.askyesno(self.t("confirm_cancel_title"), self.t("confirm_cancel_message")):
+            return
+        if not control.request_cancel():
+            messagebox.showwarning(self.t("close_blocked_title"), self.t("close_blocked_message"))
+            return
+
+        self.close_requested = True
+        self.append_log(self.t("cancel_requested"))
 
     def run_audit_operation(self) -> None:
         paths = self.validate_paths()
@@ -715,9 +758,11 @@ class LaunchBoxUtilsApp:
         launchbox_root, output_dir = paths
         only_with_findings = self.audit_output_mode_var.get() == "findings"
 
-        def worker() -> None:
+        def worker(control: OperationControl) -> None:
             try:
-                results = run_audit(launchbox_root)
+                results = run_audit(launchbox_root, control=control)
+                control.set_phase(OperationPhase.FINALIZE)
+                control.checkpoint()
                 write_reports(results, output_dir, only_with_findings)
                 self.enqueue_log(f"{self.t('audited_platforms')}: {len(results)}")
                 self.enqueue_log(f"{self.t('missing_on_disk')}: {sum(len(result.missing_on_disk) for result in results)}")
@@ -725,6 +770,8 @@ class LaunchBoxUtilsApp:
                 self.enqueue_log(f"{self.t('warnings')}: {sum(len(result.warnings) for result in results)}")
                 self.enqueue_log(f"{self.t('reports_written')}: {output_dir}")
                 self.enqueue_log(self.t("finished"))
+            except OperationCancelled:
+                self.enqueue_log(self.t("outcome_cancelled"))
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
 
@@ -794,10 +841,20 @@ class LaunchBoxUtilsApp:
             return
         only_with_findings = self.audit_output_mode_var.get() == "findings"
 
-        def worker() -> None:
+        def worker(control: OperationControl) -> None:
             try:
-                run_result = run_additional_apps_dedupe(launchbox_root, apply_changes=apply_changes)
+                run_result = run_additional_apps_dedupe(
+                    launchbox_root,
+                    apply_changes=apply_changes,
+                    control=control,
+                )
                 results = run_result.results
+                if run_result.outcome == MutationOutcome.CANCELLED:
+                    self.enqueue_log(f"{self.t('outcome')}: {self.t('outcome_cancelled')}")
+                    self.log_mutation_state_summary(run_result)
+                    return
+                control.set_phase(OperationPhase.FINALIZE)
+                control.checkpoint()
                 report_error = None
                 report_traceback = None
                 try:
@@ -834,6 +891,8 @@ class LaunchBoxUtilsApp:
                     self.enqueue_log(self.t("finished"))
                 elif run_result.outcome.value not in {"dry_run", "success"}:
                     self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))
+            except OperationCancelled:
+                self.enqueue_log(self.t("outcome_cancelled"))
             except MutationBlockedError as exc:
                 self.enqueue_log(f"{self.t('failed')}: {self.mutation_blocked_message(exc)}")
             except Exception:
@@ -878,10 +937,22 @@ class LaunchBoxUtilsApp:
             return
         only_with_findings = self.audit_output_mode_var.get() == "findings"
 
-        def worker() -> None:
+        def worker(control: OperationControl) -> None:
             try:
-                run_result = run_path_replacement(launchbox_root, old_path, new_path, apply_changes=apply_changes)
+                run_result = run_path_replacement(
+                    launchbox_root,
+                    old_path,
+                    new_path,
+                    apply_changes=apply_changes,
+                    control=control,
+                )
                 results = run_result.results
+                if run_result.outcome == MutationOutcome.CANCELLED:
+                    self.enqueue_log(f"{self.t('outcome')}: {self.t('outcome_cancelled')}")
+                    self.log_mutation_state_summary(run_result)
+                    return
+                control.set_phase(OperationPhase.FINALIZE)
+                control.checkpoint()
                 report_error = None
                 report_traceback = None
                 try:
@@ -917,6 +988,8 @@ class LaunchBoxUtilsApp:
                     self.enqueue_log(self.t("finished"))
                 elif run_result.outcome.value not in {"dry_run", "success"}:
                     self.enqueue_log(self.t(f"outcome_{run_result.outcome.value}"))
+            except OperationCancelled:
+                self.enqueue_log(self.t("outcome_cancelled"))
             except MutationBlockedError as exc:
                 self.enqueue_log(f"{self.t('failed')}: {self.mutation_blocked_message(exc)}")
             except Exception:
@@ -935,6 +1008,14 @@ class LaunchBoxUtilsApp:
             except queue.Empty:
                 break
             self.append_log(message)
+
+        worker = self.worker
+        if worker is not None and not worker.is_alive():
+            self.worker = None
+            self.operation_control = None
+            if self.close_requested:
+                self.root.destroy()
+                return
         self.root.after(100, self.process_log_queue)
 
     def append_log(self, message: str) -> None:

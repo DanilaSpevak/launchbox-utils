@@ -3,11 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..models import GameEntry, PlatformAuditResult, PlatformInfo
+from ..operation_lifecycle import OperationControl, OperationPhase
 from ..paths import path_key
 from ..xml_repository import load_games, load_platforms
 
 
-def scan_folder(folder: Path) -> tuple[dict[str, Path], list[str]]:
+def scan_folder(
+    folder: Path,
+    *,
+    control: OperationControl | None = None,
+) -> tuple[dict[str, Path], list[str]]:
     if not folder.exists():
         return {}, [f"ROM folder not found: {folder}"]
     if not folder.is_dir():
@@ -17,6 +22,8 @@ def scan_folder(folder: Path) -> tuple[dict[str, Path], list[str]]:
     warnings: list[str] = []
     try:
         for path in folder.rglob("*"):
+            if control is not None:
+                control.checkpoint()
             if path.is_file():
                 files[path_key(path)] = path.resolve(strict=False)
     except OSError as exc:
@@ -25,7 +32,14 @@ def scan_folder(folder: Path) -> tuple[dict[str, Path], list[str]]:
     return files, warnings
 
 
-def audit_platform(platform: PlatformInfo, root: Path) -> PlatformAuditResult:
+def audit_platform(
+    platform: PlatformInfo,
+    root: Path,
+    *,
+    control: OperationControl | None = None,
+) -> PlatformAuditResult:
+    if control is not None:
+        control.checkpoint()
     result = PlatformAuditResult(platform=platform)
 
     if not platform.raw_folder:
@@ -37,6 +51,8 @@ def audit_platform(platform: PlatformInfo, root: Path) -> PlatformAuditResult:
 
     database_paths: dict[str, GameEntry] = {}
     for game in games:
+        if control is not None:
+            control.checkpoint()
         database_paths[path_key(game.resolved_path)] = game
 
     if not platform.raw_folder:
@@ -45,7 +61,7 @@ def audit_platform(platform: PlatformInfo, root: Path) -> PlatformAuditResult:
         result.warnings.sort()
         return result
 
-    folder_paths, folder_warnings = scan_folder(platform.folder)
+    folder_paths, folder_warnings = scan_folder(platform.folder, control=control)
     result.warnings.extend(folder_warnings)
     result.folder_count = len(folder_paths)
     result.missing_on_disk = [game for game in games if not game.resolved_path.exists()]
@@ -60,7 +76,19 @@ def audit_platform(platform: PlatformInfo, root: Path) -> PlatformAuditResult:
     return result
 
 
-def run_audit(root: Path) -> list[PlatformAuditResult]:
+def run_audit(
+    root: Path,
+    *,
+    control: OperationControl | None = None,
+) -> list[PlatformAuditResult]:
     root = root.resolve(strict=False)
+    if control is not None:
+        control.set_phase(OperationPhase.SCAN)
+        control.checkpoint()
     platforms = load_platforms(root)
-    return [audit_platform(platform, root) for platform in platforms]
+    results: list[PlatformAuditResult] = []
+    for platform in platforms:
+        if control is not None:
+            control.checkpoint()
+        results.append(audit_platform(platform, root, control=control))
+    return results

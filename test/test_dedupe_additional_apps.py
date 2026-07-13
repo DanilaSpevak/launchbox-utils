@@ -6,6 +6,7 @@ from unittest.mock import patch
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
 from launchbox_tools.runtime_checks import MutationBlockedError
 from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationState
+from launchbox_tools.operation_lifecycle import OperationControl
 from launchbox_tools.reports.dedupe_reports import write_dedupe_reports
 from launchbox_tools.safe_write import XmlTransactionResult
 from launchbox_tools.xml_repository import child_text, local_name, parse_xml
@@ -14,6 +15,42 @@ from test.support import LaunchBoxTestCase
 
 
 class DedupeAdditionalAppsTests(LaunchBoxTestCase):
+    def test_dedupe_cancelled_after_stage_writes_manifest_without_commit(self) -> None:
+        class CancelAtCommitControl(OperationControl):
+            def begin_commit(self) -> None:
+                self.request_cancel()
+                super().begin_commit()
+
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            self.write_games_xml_raw(
+                root,
+                self.duplicate_additional_app_xml(
+                    "game-1",
+                    "Duplicate",
+                    "Unused",
+                    "Games/NES/duplicate.zip",
+                ),
+            )
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            original = xml_path.read_bytes()
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                run_result = run_additional_apps_dedupe(
+                    root,
+                    apply_changes=True,
+                    control=CancelAtCommitControl(),
+                )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            self.assertEqual(xml_path.read_bytes(), original)
+            self.assertTrue(run_result.manifest_path.is_file())
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "cancelled")
+            self.assertEqual({item["state"] for item in manifest["files"]}, {"prepared"})
+            self.assertFalse(list((root / "Data").rglob("*.tmp")))
+
     def test_dedupe_additional_apps_dry_run_reports_duplicates_without_changing_xml(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

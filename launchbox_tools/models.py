@@ -13,6 +13,7 @@ class MutationOutcome(str, Enum):
     PARTIAL = "partial"
     FAILED = "failed"
     ROLLED_BACK = "rolled_back"
+    CANCELLED = "cancelled"
 
 
 class MutationState(str, Enum):

@@ -30,6 +30,7 @@ launchbox_tools/
   xml_repository.py             # LaunchBox XML reading helpers
   runtime_checks.py             # LaunchBox process and XML file lock checks
   mutation_lock.py              # per-installation interprocess apply lock
+  operation_lifecycle.py        # operation phases and pre-commit cancellation
   safe_write.py                 # backup and safe XML write helpers
   operations/
     audit.py                    # read-only ROM audit
@@ -53,6 +54,7 @@ launchbox_tools/
 - `xml_repository.py` owns LaunchBox XML reading helpers.
 - `runtime_checks.py` owns pre-mutation safety checks for LaunchBox process state and XML file locks.
 - `mutation_lock.py` owns the installation-wide interprocess apply lock.
+- `operation_lifecycle.py` owns thread-safe operation phases, cooperative cancellation, and the irreversible commit boundary.
 - `safe_write.py` owns backup and safe XML replacement behavior.
 - `mutation_manifest.py` writes the final apply manifest independently from user reports.
 - `config.py` owns `launchbox_utils.ini` parsing and saving.
@@ -123,7 +125,9 @@ Multi-file mutations use the shared transaction executor in `safe_write.py`: pla
 
 Only one mutation may run for a LaunchBox installation at a time. Apply operations acquire a non-blocking OS lock on `Data/.launchbox-utils-mutation.lock` before reading XML and hold it through safety checks, backup, commit or rollback, manifest writing, and cleanup. The lock metadata records the operation, run UUID, PID, and UTC start time. A competing apply fails immediately with `MutationBlockedError(reason="mutation_in_progress")`; dry-run operations do not acquire this lock. The lock file is retained, while the OS releases the lock automatically when the owning process exits.
 
-`replace-paths` treats all changed XML files as one transaction. Additional Apps dedupe treats each platform XML as an independent transaction, so one failed platform does not undo successful changes to another platform. Mutation runs expose `dry_run`, `success`, `partial`, `failed`, or `rolled_back`.
+`replace-paths` treats all changed XML files as one transaction. Additional Apps dedupe treats each platform XML as an independent transaction, so one failed platform does not undo successful changes to another platform. Mutation runs expose `dry_run`, `success`, `partial`, `failed`, `rolled_back`, or `cancelled`.
+
+Long-running operations may receive an optional `OperationControl`. It publishes `scan`, `stage`, `commit`, `rollback`, `finalize`, and `finished` phases and provides cooperative cancellation checkpoints. Cancellation and the start of commit use the same lock: a cancellation request either wins before the first XML replacement or is rejected permanently once commit starts. A cancelled staged transaction keeps verified backups, removes temporary files, leaves XML unchanged, preserves `planned` / `prepared` file states, and records `outcome: cancelled` in the apply manifest.
 
 `MutationState` is the only source of truth for individual files and changes: `planned` before preparation, `prepared` after backup/stage validation, `committed` after atomic replacement, `failed` for a failed file step, and `rolled_back` after successful restoration. A schema-version 2 `manifest.json` in the apply backup root records the run UUID, outcome, file states, original paths and SHA-256 hashes, backup paths, diagnostics, and operation-specific changes. Each hash is verified against the exclusive backup before staging begins. Manifest writer failures are reported separately and never rewrite the known XML mutation state.
 
@@ -188,7 +192,9 @@ Mutation CSV/TXT reports use `state`, not an independent `applied` flag, and rep
 - Interface languages are Russian and English.
 - Texts live in `gui/translations.py`.
 - Long operations run in a background thread.
+- GUI workers are non-daemon threads, so process exit cannot interrupt commit or rollback.
 - Worker logs are passed to the UI via `queue.Queue`.
+- `WM_DELETE_WINDOW` closes immediately while idle. During `scan` or `stage`, it asks for confirmation, requests cooperative cancellation, and closes only after the worker exits. From the first commit through rollback and finalization, closing is blocked until the worker finishes.
 - Path edits in the GUI are saved back to `launchbox_utils.ini`.
 - Apply operations run `ensure_safe_to_mutate()` on the UI thread before confirmation and before starting the worker.
 

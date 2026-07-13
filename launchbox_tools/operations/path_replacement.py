@@ -17,6 +17,7 @@ from ..models import (
 )
 from ..mutation_lock import mutation_run_lock
 from ..mutation_manifest import write_mutation_manifest
+from ..operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import XmlMutation, execute_xml_transaction, reserve_unique_backup_root
@@ -124,10 +125,13 @@ def _collect_platform_folder_replacements(
     new_path: Path,
     apply_changes: bool,
     platform_filter: str | None,
+    control: OperationControl | None = None,
 ) -> bool:
     changed = False
     platforms_xml = root / "Data" / "Platforms.xml"
     for element in platforms_tree.getroot().iter():
+        if control is not None:
+            control.checkpoint()
         if local_name(element.tag) != "Platform":
             continue
 
@@ -169,7 +173,10 @@ def _collect_application_path_replacements(
     old_path: Path,
     new_path: Path,
     apply_changes: bool,
+    control: OperationControl | None = None,
 ) -> tuple[ET.ElementTree | None, bool]:
+    if control is not None:
+        control.checkpoint()
     if not platform.database_xml.exists():
         result.warnings.append(f"Platform XML not found: {platform.database_xml}")
         return None, False
@@ -177,6 +184,8 @@ def _collect_application_path_replacements(
     tree = parse_xml_tree(platform.database_xml)
     changed = False
     for element in tree.getroot().iter():
+        if control is not None:
+            control.checkpoint()
         entry_type = local_name(element.tag)
         if entry_type not in {"Game", "AdditionalApplication"}:
             continue
@@ -218,6 +227,8 @@ def run_path_replacement(
     new_path: Path,
     platform_filter: str | None = None,
     apply_changes: bool = False,
+    *,
+    control: OperationControl | None = None,
 ) -> MutationRunResult[PathReplacementResult]:
     resolved_root = root.resolve(strict=False)
     if not apply_changes:
@@ -227,6 +238,7 @@ def run_path_replacement(
             new_path,
             platform_filter,
             apply_changes=False,
+            control=control,
         )
 
     run_id = str(uuid4())
@@ -238,6 +250,7 @@ def run_path_replacement(
             platform_filter,
             apply_changes=True,
             run_id=run_id,
+            control=control,
         )
 
 
@@ -248,10 +261,13 @@ def _run_path_replacement(
     platform_filter: str | None = None,
     apply_changes: bool = False,
     run_id: str | None = None,
+    control: OperationControl | None = None,
 ) -> MutationRunResult[PathReplacementResult]:
     root = root.resolve(strict=False)
     old_path = old_path.expanduser().resolve(strict=False)
     new_path = new_path.expanduser().resolve(strict=False)
+    if control is not None:
+        control.set_phase(OperationPhase.SCAN)
     platforms = load_platforms(root)
     if platform_filter:
         platforms = [platform for platform in platforms if platform.name.casefold() == platform_filter.casefold()]
@@ -274,34 +290,55 @@ def _run_path_replacement(
     if run_id is not None:
         backup_name = f"{backup_name}-{run_id}"
     backup_root = backup_parent / backup_name
+    if apply_changes:
+        backup_root = reserve_unique_backup_root(backup_parent, backup_name)
 
-    platforms_tree = parse_xml_tree(platforms_xml)
-    platforms_changed = _collect_platform_folder_replacements(
-        platforms_tree,
-        result_by_platform,
-        root,
-        old_path,
-        new_path,
-        apply_changes,
-        platform_filter,
-    )
+    try:
+        if control is not None:
+            control.checkpoint()
+        platforms_tree = parse_xml_tree(platforms_xml)
+        platforms_changed = _collect_platform_folder_replacements(
+            platforms_tree,
+            result_by_platform,
+            root,
+            old_path,
+            new_path,
+            apply_changes,
+            platform_filter,
+            control,
+        )
 
-    platform_trees: list[tuple[PathReplacementResult, ET.ElementTree, bool]] = []
-    for platform in platforms:
-        result = result_by_platform[platform.name.casefold()]
-        try:
-            tree, changed = _collect_application_path_replacements(
-                platform,
-                result,
-                root,
-                old_path,
-                new_path,
-                apply_changes,
-            )
-            if tree is not None:
-                platform_trees.append((result, tree, changed))
-        except (ET.ParseError, OSError) as exc:
-            result.error = str(exc)
+        platform_trees: list[tuple[PathReplacementResult, ET.ElementTree, bool]] = []
+        for platform in platforms:
+            if control is not None:
+                control.checkpoint()
+            result = result_by_platform[platform.name.casefold()]
+            try:
+                tree, changed = _collect_application_path_replacements(
+                    platform,
+                    result,
+                    root,
+                    old_path,
+                    new_path,
+                    apply_changes,
+                    control,
+                )
+                if tree is not None:
+                    platform_trees.append((result, tree, changed))
+            except (ET.ParseError, OSError) as exc:
+                result.error = str(exc)
+    except OperationCancelled as exc:
+        run_result = MutationRunResult(
+            results,
+            MutationOutcome.CANCELLED,
+            str(exc),
+            run_id=run_id,
+        )
+        if control is not None:
+            control.set_phase(OperationPhase.FINALIZE)
+        if apply_changes:
+            _write_path_replacement_manifest(run_result, backup_root)
+        return run_result
 
     for result in results:
         result.warnings.sort()
@@ -331,9 +368,6 @@ def _run_path_replacement(
         for replacement in result.replacements:
             replacement.state = planned_files_by_path[replacement.xml_path.resolve(strict=False)].state
 
-    if apply_changes:
-        backup_root = reserve_unique_backup_root(backup_parent, backup_name)
-
     if planning_errors:
         run_result = MutationRunResult(
             results,
@@ -342,11 +376,15 @@ def _run_path_replacement(
             files=planned_files,
             run_id=run_id,
         )
+        if control is not None:
+            control.set_phase(OperationPhase.FINALIZE)
         if apply_changes:
             _write_path_replacement_manifest(run_result, backup_root)
         return run_result
 
     if not apply_changes:
+        if control is not None:
+            control.set_phase(OperationPhase.FINALIZE)
         return MutationRunResult(results, MutationOutcome.DRY_RUN, files=planned_files)
 
     mutations: list[XmlMutation] = []
@@ -357,7 +395,7 @@ def _run_path_replacement(
         for result, tree, changed in platform_trees
         if changed
     )
-    transaction = execute_xml_transaction(mutations, backup_root, run_id)
+    transaction = execute_xml_transaction(mutations, backup_root, run_id, control=control)
     transaction_files_by_path = {file_result.path: file_result for file_result in transaction.files}
 
     for result in results:
@@ -380,6 +418,8 @@ def _run_path_replacement(
         transaction.files,
         run_id=run_id,
     )
+    if control is not None:
+        control.set_phase(OperationPhase.FINALIZE)
     _write_path_replacement_manifest(run_result, backup_root)
     return run_result
 

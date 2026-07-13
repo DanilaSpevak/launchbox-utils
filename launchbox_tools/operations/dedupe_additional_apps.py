@@ -19,6 +19,7 @@ from ..models import (
 )
 from ..mutation_lock import mutation_run_lock
 from ..mutation_manifest import write_mutation_manifest
+from ..operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from ..paths import path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import XmlMutation, execute_xml_transaction, reserve_unique_backup_root
@@ -179,7 +180,11 @@ def dedupe_additional_apps_for_platform(
     apply_changes: bool,
     backup_root: Path,
     run_id: str | None = None,
+    *,
+    control: OperationControl | None = None,
 ) -> tuple[AdditionalAppsDedupeResult, MutationOutcome, list[str], list[MutationFileResult]]:
+    if control is not None:
+        control.checkpoint()
     result = AdditionalAppsDedupeResult(platform=platform)
     if not platform.database_xml.exists():
         result.warnings.append(f"Platform XML not found: {platform.database_xml}")
@@ -189,6 +194,8 @@ def dedupe_additional_apps_for_platform(
     entries, warnings = load_application_entries(platform, root, tree.getroot(), include_xml_links=True)
     result.warnings.extend(warnings)
     duplicates, ambiguities, dedupe_warnings = find_additional_app_duplicates(platform, root, entries)
+    if control is not None:
+        control.checkpoint()
     result.duplicates = duplicates
     result.ambiguities = ambiguities
     result.warnings.extend(dedupe_warnings)
@@ -235,6 +242,7 @@ def dedupe_additional_apps_for_platform(
         [XmlMutation(platform.database_xml, tree)],
         backup_root,
         run_id,
+        control=control,
     )
     result.backup_path = transaction.backup_paths.get(platform.database_xml.resolve(strict=False))
     result.error = transaction.error
@@ -254,6 +262,8 @@ def run_additional_apps_dedupe(
     root: Path,
     platform_filter: str | None = None,
     apply_changes: bool = False,
+    *,
+    control: OperationControl | None = None,
 ) -> MutationRunResult[AdditionalAppsDedupeResult]:
     resolved_root = root.resolve(strict=False)
     if not apply_changes:
@@ -261,6 +271,7 @@ def run_additional_apps_dedupe(
             resolved_root,
             platform_filter,
             apply_changes=False,
+            control=control,
         )
 
     run_id = str(uuid4())
@@ -270,6 +281,7 @@ def run_additional_apps_dedupe(
             platform_filter,
             apply_changes=True,
             run_id=run_id,
+            control=control,
         )
 
 
@@ -278,8 +290,11 @@ def _run_additional_apps_dedupe(
     platform_filter: str | None = None,
     apply_changes: bool = False,
     run_id: str | None = None,
+    control: OperationControl | None = None,
 ) -> MutationRunResult[AdditionalAppsDedupeResult]:
     root = root.resolve(strict=False)
+    if control is not None:
+        control.set_phase(OperationPhase.SCAN)
     platforms = load_platforms(root)
     if platform_filter:
         platforms = [platform for platform in platforms if platform.name.casefold() == platform_filter.casefold()]
@@ -300,15 +315,30 @@ def _run_additional_apps_dedupe(
     outcomes: list[MutationOutcome] = []
     rollback_errors: list[str] = []
     file_results: list[MutationFileResult] = []
+    cancelled_error: str | None = None
     for platform in platforms:
         try:
+            if control is not None:
+                control.set_phase(OperationPhase.SCAN)
+                control.checkpoint()
             result, outcome, platform_rollback_errors, platform_files = dedupe_additional_apps_for_platform(
-                platform, root, apply_changes, backup_root, run_id
+                platform,
+                root,
+                apply_changes,
+                backup_root,
+                run_id,
+                control=control,
             )
             results.append(result)
             outcomes.append(outcome)
             rollback_errors.extend(platform_rollback_errors)
             file_results.extend(platform_files)
+            if outcome == MutationOutcome.CANCELLED:
+                cancelled_error = "Operation cancelled"
+                break
+        except OperationCancelled as exc:
+            cancelled_error = str(exc)
+            break
         except (ET.ParseError, OSError) as exc:
             results.append(
                 AdditionalAppsDedupeResult(
@@ -326,7 +356,9 @@ def _run_additional_apps_dedupe(
                 )
             )
 
-    if not apply_changes:
+    if cancelled_error is not None:
+        outcome = MutationOutcome.CANCELLED
+    elif not apply_changes:
         outcome = MutationOutcome.FAILED if MutationOutcome.FAILED in outcomes else MutationOutcome.DRY_RUN
     else:
         committed_count = sum(1 for result in file_results if result.state == MutationState.COMMITTED)
@@ -341,6 +373,8 @@ def _run_additional_apps_dedupe(
             outcome = MutationOutcome.SUCCESS
 
     errors = [result.error for result in results if result.error]
+    if cancelled_error is not None and cancelled_error not in errors:
+        errors.append(cancelled_error)
     run_result = MutationRunResult(
         results,
         outcome,
@@ -349,6 +383,8 @@ def _run_additional_apps_dedupe(
         file_results,
         run_id=run_id,
     )
+    if control is not None:
+        control.set_phase(OperationPhase.FINALIZE)
     if apply_changes:
         changes = [
             {

@@ -5,12 +5,48 @@ from uuid import UUID
 from unittest.mock import patch
 from launchbox_tools.operations.path_replacement import build_replacement_value, run_path_replacement
 from launchbox_tools.models import MutationOutcome, MutationState
+from launchbox_tools.operation_lifecycle import OperationControl
 from launchbox_tools.xml_repository import child_text, local_name, parse_xml
 
 from test.support import LaunchBoxTestCase
 
 
 class PathReplacementTests(LaunchBoxTestCase):
+    def test_path_replacement_cancelled_after_stage_writes_manifest_without_commit(self) -> None:
+        class CancelAtCommitControl(OperationControl):
+            def begin_commit(self) -> None:
+                self.request_cancel()
+                super().begin_commit()
+
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            xml_paths = [
+                root / "Data" / "Platforms.xml",
+                root / "Data" / "Platforms" / "Nintendo Entertainment System.xml",
+            ]
+            original_contents = {path: path.read_bytes() for path in xml_paths}
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                run_result = run_path_replacement(
+                    root,
+                    root / "Games" / "NES",
+                    root / "Games" / "SNES",
+                    apply_changes=True,
+                    control=CancelAtCommitControl(),
+                )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            self.assertTrue(run_result.manifest_path.is_file())
+            self.assertTrue(all(item.state == MutationState.PREPARED for item in run_result.files))
+            self.assertEqual({path: path.read_bytes() for path in xml_paths}, original_contents)
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "cancelled")
+            self.assertEqual({item["state"] for item in manifest["files"]}, {"prepared"})
+            self.assertTrue(all(Path(item["backup_path"]).is_file() for item in manifest["files"]))
+            self.assertFalse(list((root / "Data").rglob("*.tmp")))
+
     def test_build_replacement_value_preserves_absolute_paths(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

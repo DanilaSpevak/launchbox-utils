@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .models import MutationFileResult, MutationOutcome, MutationState, PlatformInfo
+from .operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from .runtime_checks import ensure_safe_to_mutate
 
 
@@ -98,8 +99,15 @@ def execute_xml_transaction(
     mutations: list[XmlMutation],
     backup_root: Path,
     run_id: str | None = None,
+    *,
+    control: OperationControl | None = None,
 ) -> XmlTransactionResult:
     if not mutations:
+        if control is not None:
+            try:
+                control.checkpoint()
+            except OperationCancelled as exc:
+                return XmlTransactionResult(MutationOutcome.CANCELLED, error=str(exc))
         return XmlTransactionResult(outcome=MutationOutcome.SUCCESS)
 
     backups: dict[Path, Path] = {}
@@ -111,9 +119,15 @@ def execute_xml_transaction(
     files_by_path = {result.path: result for result in files}
 
     try:
+        if control is not None:
+            control.set_phase(OperationPhase.STAGE)
+            control.checkpoint()
+
         serialized: dict[Path, bytes] = {}
         seen: set[Path] = set()
         for mutation, file_result in zip(mutations, files):
+            if control is not None:
+                control.checkpoint()
             destination = file_result.path
             try:
                 canonical_destination = destination.resolve(strict=False)
@@ -141,6 +155,8 @@ def execute_xml_transaction(
 
         try:
             for destination in destinations:
+                if control is not None:
+                    control.checkpoint()
                 source_sha256 = sha256_file(destination)
                 backups[destination] = backup_xml_file(destination, backup_roots[destination])
                 files_by_path[destination].backup_path = backups[destination]
@@ -148,6 +164,8 @@ def execute_xml_transaction(
                 if backup_sha256 != source_sha256:
                     raise OSError(f"Backup verification failed for {destination}")
                 files_by_path[destination].source_sha256 = source_sha256
+        except OperationCancelled:
+            raise
         except Exception as exc:
             file_result = files_by_path[destination]
             file_result.state = MutationState.FAILED
@@ -156,6 +174,8 @@ def execute_xml_transaction(
 
         try:
             for destination, payload in serialized.items():
+                if control is not None:
+                    control.checkpoint()
                 stage_path = destination.with_name(
                     f".{destination.name}.{transaction_id}.stage.tmp"
                 )
@@ -163,6 +183,8 @@ def execute_xml_transaction(
                 stage_path.write_bytes(payload)
                 ET.parse(stage_path)
                 files_by_path[destination].state = MutationState.PREPARED
+        except OperationCancelled:
+            raise
         except Exception as exc:
             file_result = files_by_path[destination]
             file_result.state = MutationState.FAILED
@@ -174,6 +196,10 @@ def execute_xml_transaction(
         except Exception as exc:
             return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
 
+        if control is not None:
+            control.checkpoint()
+            control.begin_commit()
+
         try:
             for destination in destinations:
                 _commit_staged_file(stage_paths[destination], destination)
@@ -184,6 +210,8 @@ def execute_xml_transaction(
             failed_result.state = MutationState.FAILED
             failed_result.error = str(exc)
             rollback_errors: list[str] = []
+            if committed and control is not None:
+                control.set_phase(OperationPhase.ROLLBACK)
             for destination in reversed(committed):
                 rollback_path = destination.with_name(
                     f".{destination.name}.{transaction_id}.rollback.tmp"
@@ -201,6 +229,13 @@ def execute_xml_transaction(
             return XmlTransactionResult(outcome, backups, str(exc), rollback_errors, files)
 
         return XmlTransactionResult(MutationOutcome.SUCCESS, backups, files=files)
+    except OperationCancelled as exc:
+        return XmlTransactionResult(
+            MutationOutcome.CANCELLED,
+            backups,
+            str(exc),
+            files=files,
+        )
     except Exception as exc:
         return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
     finally:

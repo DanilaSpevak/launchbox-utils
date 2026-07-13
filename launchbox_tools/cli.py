@@ -247,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         MutationOutcome.PARTIAL,
         MutationOutcome.FAILED,
         MutationOutcome.ROLLED_BACK,
+        MutationOutcome.CANCELLED,
     }:
         return _finish(1)
     if command in {"dedupe-additional-apps", "replace-paths"} and mutation_run.manifest_error is not None:

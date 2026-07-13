@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 from launchbox_tools.models import MutationOutcome, MutationState
+from launchbox_tools.operation_lifecycle import OperationControl, OperationPhase
 from launchbox_tools.safe_write import (
     XmlMutation,
     backup_xml_file,
@@ -15,6 +16,36 @@ from test.support import LaunchBoxTestCase
 
 
 class SafeWriteTests(LaunchBoxTestCase):
+    def test_xml_transaction_cancelled_after_stage_does_not_commit(self) -> None:
+        class CancelAtCommitControl(OperationControl):
+            def begin_commit(self) -> None:
+                self.request_cancel()
+                super().begin_commit()
+
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            control = CancelAtCommitControl()
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                transaction = execute_xml_transaction(
+                    [XmlMutation(destination, tree)],
+                    root / "Backups",
+                    control=control,
+                )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.CANCELLED)
+            self.assertEqual(transaction.files[0].state, MutationState.PREPARED)
+            self.assertEqual(destination.read_text(encoding="utf-8"), "<Root><Value>old</Value></Root>")
+            self.assertTrue(transaction.files[0].backup_path.is_file())
+            self.assertFalse(list(root.rglob("*.tmp")))
+            snapshot = control.snapshot()
+            self.assertTrue(snapshot.cancel_requested)
+            self.assertFalse(snapshot.commit_started)
+
     def test_backup_xml_file_never_overwrites_existing_backup(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
@@ -103,6 +134,7 @@ class SafeWriteTests(LaunchBoxTestCase):
             first_tree.getroot().find("Value").text = "changed-first"
             second_tree.getroot().find("Value").text = "changed-second"
             commit_calls = 0
+            control = OperationControl()
 
             def fail_second_commit(stage_path: Path, destination: Path) -> None:
                 nonlocal commit_calls
@@ -116,6 +148,7 @@ class SafeWriteTests(LaunchBoxTestCase):
                     transaction = execute_xml_transaction(
                         [XmlMutation(first, first_tree), XmlMutation(second, second_tree)],
                         root / "Backups",
+                        control=control,
                     )
 
             self.assertEqual(transaction.outcome, MutationOutcome.ROLLED_BACK, transaction)
@@ -123,6 +156,8 @@ class SafeWriteTests(LaunchBoxTestCase):
                 [result.state for result in transaction.files],
                 [MutationState.ROLLED_BACK, MutationState.FAILED],
             )
+            self.assertEqual(control.snapshot().phase, OperationPhase.ROLLBACK)
+            self.assertFalse(control.request_cancel())
             self.assertEqual(first.read_bytes(), originals[first])
             self.assertEqual(second.read_bytes(), originals[second])
             self.assertEqual(len(transaction.backup_paths), 2)
