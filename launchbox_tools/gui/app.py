@@ -95,6 +95,7 @@ class LaunchBoxUtilsApp:
         self.worker: threading.Thread | None = None
         self.operation_control: OperationControl | None = None
         self.close_requested = False
+        self.log_poll_after_id: str | None = None
         self.config_save_after_id: str | None = None
         self.tooltips: list[Tooltip] = []
         self.current_operation_key = tk.StringVar(value="audit")
@@ -129,7 +130,7 @@ class LaunchBoxUtilsApp:
         self.setup_config_autosave()
         self.apply_language()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.root.after(100, self.process_log_queue)
+        self.log_poll_after_id = self.root.after(100, self.process_log_queue)
 
     def t(self, key: str) -> str:
         return translate(self.language, key)
@@ -730,7 +731,7 @@ class LaunchBoxUtilsApp:
 
     def on_close(self) -> None:
         if not self.is_busy():
-            self.root.destroy()
+            self.destroy_root()
             return
 
         if self.close_requested:
@@ -762,7 +763,7 @@ class LaunchBoxUtilsApp:
             return
 
         if not self.is_busy():
-            self.root.destroy()
+            self.destroy_root()
             return
         self.append_log(self.t("close_deferred"))
         messagebox.showinfo(self.t("close_pending_title"), self.t("protected_close_message"))
@@ -1015,6 +1016,7 @@ class LaunchBoxUtilsApp:
         self.log_queue.put(message)
 
     def process_log_queue(self) -> None:
+        self.log_poll_after_id = None
         while True:
             try:
                 message = self.log_queue.get_nowait()
@@ -1027,9 +1029,25 @@ class LaunchBoxUtilsApp:
             self.worker = None
             self.operation_control = None
             if self.close_requested:
-                self.root.destroy()
+                self.destroy_root()
                 return
-        self.root.after(100, self.process_log_queue)
+        self.log_poll_after_id = self.root.after(100, self.process_log_queue)
+
+    def destroy_root(self) -> None:
+        for attribute in ("log_poll_after_id", "config_save_after_id"):
+            after_id = getattr(self, attribute, None)
+            if after_id is not None:
+                try:
+                    self.root.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+                setattr(self, attribute, None)
+        for tooltip in getattr(self, "tooltips", []):
+            try:
+                tooltip.cancel()
+            except tk.TclError:
+                pass
+        self.root.destroy()
 
     def append_log(self, message: str) -> None:
         self.logs_status_var.set(message.splitlines()[0] if message else "")

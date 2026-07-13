@@ -1,6 +1,7 @@
 import tempfile
 import queue
 import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch
 from launchbox_tools.config import load_configured_language, save_interface_language
@@ -192,6 +193,30 @@ class GuiTests(LaunchBoxTestCase):
 
         app.root.destroy.assert_called_once_with()
 
+    def test_gui_destroy_cancels_owned_after_callbacks(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.root = Mock()
+        app.log_poll_after_id = "poll"
+        app.config_save_after_id = "autosave"
+        tooltip = Mock()
+        app.tooltips = [tooltip]
+
+        app.destroy_root()
+
+        self.assertEqual(
+            [item.args for item in app.root.after_cancel.call_args_list],
+            [
+                ("poll",),
+                ("autosave",),
+            ],
+        )
+        self.assertIsNone(app.log_poll_after_id)
+        self.assertIsNone(app.config_save_after_id)
+        tooltip.cancel.assert_called_once_with()
+        app.root.destroy.assert_called_once_with()
+
     def test_gui_close_stage_requests_cancel_and_closes_after_worker_stops(self) -> None:
         from launchbox_tools.gui.app import LaunchBoxUtilsApp
 
@@ -366,12 +391,30 @@ class GuiTests(LaunchBoxTestCase):
                 root = None
                 release = threading.Event()
                 app = None
+                worker_thread = None
+                destroyed = threading.Event()
+                callback_errors: list[tuple[type[BaseException], BaseException, object]] = []
                 try:
                     try:
                         root = tk.Tk()
                     except tk.TclError as exc:
                         self.skipTest(f"Tk is not available: {exc}")
                     root.withdraw()
+
+                    def record_callback_exception(
+                        exc_type: type[BaseException],
+                        exc: BaseException,
+                        traceback_object: object,
+                    ) -> None:
+                        callback_errors.append((exc_type, exc, traceback_object))
+
+                    root.report_callback_exception = record_callback_exception
+
+                    def record_destroy(event: tk.Event) -> None:
+                        if event.widget is root:
+                            destroyed.set()
+
+                    root.bind("<Destroy>", record_destroy, add=True)
 
                     with tempfile.TemporaryDirectory() as temp_dir:
                         app = LaunchBoxUtilsApp(root, Path(temp_dir) / "launchbox_utils.ini")
@@ -382,7 +425,10 @@ class GuiTests(LaunchBoxTestCase):
                         def worker(control: OperationControl) -> None:
                             if phase in {OperationPhase.COMMIT, OperationPhase.ROLLBACK}:
                                 control.begin_commit()
-                            control.set_phase(phase)
+                            if phase == OperationPhase.FINALIZE:
+                                control.begin_finalize()
+                            else:
+                                control.set_phase(phase)
                             started.set()
                             if phase in {OperationPhase.SCAN, OperationPhase.STAGE}:
                                 try:
@@ -394,6 +440,7 @@ class GuiTests(LaunchBoxTestCase):
                                 release.wait(timeout=2)
 
                         app.start_worker("start", worker)
+                        worker_thread = app.worker
                         self.assertTrue(started.wait(timeout=2))
 
                         if phase in {OperationPhase.SCAN, OperationPhase.STAGE}:
@@ -408,17 +455,27 @@ class GuiTests(LaunchBoxTestCase):
                             release.set()
 
                         self.assertTrue(app.close_requested)
-                        app.worker.join(timeout=2)
-                        self.assertFalse(app.worker.is_alive())
-                        app.process_log_queue()
+                        deadline = time.monotonic() + 3
+                        while not destroyed.is_set() and time.monotonic() < deadline:
+                            root.update()
+                            time.sleep(0.005)
+
+                        self.assertTrue(destroyed.is_set(), f"window was not destroyed in {phase}")
+                        self.assertIsNotNone(worker_thread)
+                        self.assertFalse(worker_thread.is_alive())
+                        self.assertEqual(callback_errors, [])
+                        self.assertIsNone(app.worker)
                         root = None
                 finally:
                     release.set()
-                    if app is not None and app.worker is not None and app.worker.is_alive():
-                        app.worker.join(timeout=2)
+                    if worker_thread is not None and worker_thread.is_alive():
+                        worker_thread.join(timeout=2)
                     if root is not None:
                         try:
-                            root.destroy()
+                            if app is not None:
+                                app.destroy_root()
+                            else:
+                                root.destroy()
                         except tk.TclError:
                             pass
 
@@ -428,6 +485,7 @@ class GuiTests(LaunchBoxTestCase):
         from launchbox_tools.gui.app import LaunchBoxUtilsApp
 
         root = None
+        app = None
         try:
             root = tk.Tk()
         except tk.TclError as exc:
@@ -452,7 +510,10 @@ class GuiTests(LaunchBoxTestCase):
                 self.assertEqual(load_configured_language(config_path), "en")
         finally:
             if root is not None:
-                root.destroy()
+                if app is not None:
+                    app.destroy_root()
+                else:
+                    root.destroy()
 
     def test_gui_hides_planned_operations(self) -> None:
         import tkinter as tk
@@ -460,6 +521,7 @@ class GuiTests(LaunchBoxTestCase):
         from launchbox_tools.gui.app import LaunchBoxUtilsApp
 
         root = None
+        app = None
         try:
             root = tk.Tk()
         except tk.TclError as exc:
@@ -482,4 +544,7 @@ class GuiTests(LaunchBoxTestCase):
                 self.assertEqual(app.current_operation_key.get(), "audit")
         finally:
             if root is not None:
-                root.destroy()
+                if app is not None:
+                    app.destroy_root()
+                else:
+                    root.destroy()
