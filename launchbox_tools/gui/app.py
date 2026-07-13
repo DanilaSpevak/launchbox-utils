@@ -777,8 +777,7 @@ class LaunchBoxUtilsApp:
         def worker(control: OperationControl) -> None:
             try:
                 results = run_audit(launchbox_root, control=control)
-                control.set_phase(OperationPhase.FINALIZE)
-                control.checkpoint()
+                control.begin_finalize()
                 write_reports(results, output_dir, only_with_findings)
                 self.enqueue_log(f"{self.t('audited_platforms')}: {len(results)}")
                 self.enqueue_log(f"{self.t('missing_on_disk')}: {sum(len(result.missing_on_disk) for result in results)}")
@@ -869,8 +868,7 @@ class LaunchBoxUtilsApp:
                     self.enqueue_log(f"{self.t('outcome')}: {self.t('outcome_cancelled')}")
                     self.log_mutation_state_summary(run_result)
                     return
-                control.set_phase(OperationPhase.FINALIZE)
-                control.checkpoint()
+                control.begin_finalize()
                 report_error = None
                 report_traceback = None
                 try:
@@ -967,8 +965,7 @@ class LaunchBoxUtilsApp:
                     self.enqueue_log(f"{self.t('outcome')}: {self.t('outcome_cancelled')}")
                     self.log_mutation_state_summary(run_result)
                     return
-                control.set_phase(OperationPhase.FINALIZE)
-                control.checkpoint()
+                control.begin_finalize()
                 report_error = None
                 report_traceback = None
                 try:

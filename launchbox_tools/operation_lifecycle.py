@@ -33,6 +33,7 @@ class OperationControl:
         self._cancel_event = threading.Event()
         self._phase = OperationPhase.SCAN
         self._commit_started = False
+        self._finalize_started = False
 
     def snapshot(self) -> OperationSnapshot:
         with self._lock:
@@ -48,7 +49,7 @@ class OperationControl:
 
     def request_cancel(self) -> bool:
         with self._lock:
-            if self._commit_started or self._phase not in {
+            if self._commit_started or self._finalize_started or self._phase not in {
                 OperationPhase.SCAN,
                 OperationPhase.STAGE,
             }:
@@ -69,6 +70,16 @@ class OperationControl:
                 raise OperationCancelled("Operation cancelled")
             self._commit_started = True
             self._phase = OperationPhase.COMMIT
+
+    def begin_finalize(self) -> None:
+        """Atomically close cancellable work and enter finalization."""
+
+        with self._lock:
+            cancelled = self._cancel_event.is_set() and not self._commit_started
+            self._finalize_started = True
+            self._phase = OperationPhase.FINALIZE
+            if cancelled:
+                raise OperationCancelled("Operation cancelled")
 
     def finish(self) -> None:
         self.set_phase(OperationPhase.FINISHED)

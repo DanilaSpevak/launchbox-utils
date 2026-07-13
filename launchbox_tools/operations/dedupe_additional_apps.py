@@ -384,6 +384,15 @@ def _run_additional_apps_dedupe(
                 )
             )
 
+    if control is not None:
+        if cancelled_error is not None:
+            control.set_phase(OperationPhase.FINALIZE)
+        else:
+            try:
+                control.begin_finalize()
+            except OperationCancelled as exc:
+                cancelled_error = str(exc)
+
     if cancelled_error is not None:
         outcome = MutationOutcome.CANCELLED
     elif not apply_changes:
@@ -411,8 +420,6 @@ def _run_additional_apps_dedupe(
         file_results,
         run_id=run_id,
     )
-    if control is not None:
-        control.set_phase(OperationPhase.FINALIZE)
     if apply_changes:
         changes = [
             {

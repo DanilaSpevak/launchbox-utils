@@ -387,10 +387,23 @@ def _run_path_replacement(
     ]
     planned_files = _build_planned_file_results(results)
 
-    if apply_changes:
-        backup_root = reserve_unique_backup_root(backup_parent, backup_name)
-
     if planning_errors:
+        try:
+            if control is not None:
+                control.begin_finalize()
+        except OperationCancelled as exc:
+            run_result = MutationRunResult(
+                results,
+                MutationOutcome.CANCELLED,
+                str(exc),
+                files=planned_files,
+                run_id=run_id,
+            )
+            if apply_changes:
+                backup_root = reserve_unique_backup_root(backup_parent, backup_name)
+                _write_path_replacement_manifest(run_result, backup_root)
+            return run_result
+
         run_result = MutationRunResult(
             results,
             MutationOutcome.FAILED,
@@ -398,17 +411,25 @@ def _run_path_replacement(
             files=planned_files,
             run_id=run_id,
         )
-        if control is not None:
-            control.set_phase(OperationPhase.FINALIZE)
         if apply_changes:
+            backup_root = reserve_unique_backup_root(backup_parent, backup_name)
             _write_path_replacement_manifest(run_result, backup_root)
         return run_result
 
     if not apply_changes:
-        if control is not None:
-            control.set_phase(OperationPhase.FINALIZE)
+        try:
+            if control is not None:
+                control.begin_finalize()
+        except OperationCancelled as exc:
+            return MutationRunResult(
+                results,
+                MutationOutcome.CANCELLED,
+                str(exc),
+                files=planned_files,
+            )
         return MutationRunResult(results, MutationOutcome.DRY_RUN, files=planned_files)
 
+    backup_root = reserve_unique_backup_root(backup_parent, backup_name)
     mutations: list[XmlMutation] = []
     if platforms_changed:
         mutations.append(XmlMutation(platforms_xml, platforms_tree))
@@ -432,16 +453,24 @@ def _run_path_replacement(
         if transaction.outcome != MutationOutcome.SUCCESS and result.replacements:
             result.error = transaction.error
 
+    late_cancel_error: str | None = None
+    if control is not None:
+        if transaction.outcome == MutationOutcome.CANCELLED:
+            control.set_phase(OperationPhase.FINALIZE)
+        else:
+            try:
+                control.begin_finalize()
+            except OperationCancelled as exc:
+                late_cancel_error = str(exc)
+
     run_result = MutationRunResult(
         results,
-        transaction.outcome,
-        transaction.error,
+        MutationOutcome.CANCELLED if late_cancel_error is not None else transaction.outcome,
+        late_cancel_error or transaction.error,
         transaction.rollback_errors,
         transaction.files,
         run_id=run_id,
     )
-    if control is not None:
-        control.set_phase(OperationPhase.FINALIZE)
     _write_path_replacement_manifest(run_result, backup_root)
     return run_result
 

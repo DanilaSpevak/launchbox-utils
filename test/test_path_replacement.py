@@ -12,6 +12,44 @@ from test.support import LaunchBoxTestCase
 
 
 class PathReplacementTests(LaunchBoxTestCase):
+    def test_path_replacement_late_cancel_wins_before_failed_manifest(self) -> None:
+        class CancelAtFinalizeControl(OperationControl):
+            def begin_finalize(self) -> None:
+                self.request_cancel()
+                super().begin_finalize()
+
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            xml_paths = [
+                root / "Data" / "Platforms.xml",
+                root / "Data" / "Platforms" / "Nintendo Entertainment System.xml",
+            ]
+            original_contents = {path: path.read_bytes() for path in xml_paths}
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch(
+                    "launchbox_tools.operations.path_replacement._collect_application_path_replacements",
+                    side_effect=OSError("scan failed"),
+                ):
+                    run_result = run_path_replacement(
+                        root,
+                        root / "Games" / "NES",
+                        root / "Games" / "SNES",
+                        apply_changes=True,
+                        control=CancelAtFinalizeControl(),
+                    )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            self.assertEqual({path: path.read_bytes() for path in xml_paths}, original_contents)
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "cancelled")
+            files_by_path = {item["path"]: item for item in manifest["files"]}
+            for change in manifest["changes"]:
+                self.assertEqual(change["state"], files_by_path[change["xml_path"]]["state"])
+            self.assertFalse(list((root / "Data").rglob("*.tmp")))
+
     def test_path_replacement_cancelled_before_scan_writes_empty_consistent_manifest(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

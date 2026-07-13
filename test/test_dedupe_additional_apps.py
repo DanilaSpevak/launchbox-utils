@@ -24,6 +24,32 @@ from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class DedupeAdditionalAppsTests(LaunchBoxTestCase):
+    def test_dedupe_late_cancel_wins_before_success_manifest(self) -> None:
+        class CancelAtFinalizeControl(OperationControl):
+            def begin_finalize(self) -> None:
+                self.request_cancel()
+                super().begin_finalize()
+
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            original = xml_path.read_bytes()
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                run_result = run_additional_apps_dedupe(
+                    root,
+                    apply_changes=True,
+                    control=CancelAtFinalizeControl(),
+                )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            self.assertEqual(xml_path.read_bytes(), original)
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "cancelled")
+            self.assertFalse(list((root / "Data").rglob("*.tmp")))
+
     def test_dedupe_cancelled_before_scan_writes_empty_manifest(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
