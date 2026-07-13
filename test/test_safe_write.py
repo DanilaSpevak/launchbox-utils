@@ -8,6 +8,7 @@ from launchbox_tools.safe_write import (
     XmlMutation,
     _serialize_xml_tree,
     _validate_xml_file,
+    _validate_xml_payload,
     _write_bytes_with_checkpoints,
     backup_xml_file,
     execute_xml_transaction,
@@ -42,6 +43,69 @@ class SafeWriteTests(LaunchBoxTestCase):
             _serialize_xml_tree(ET.ElementTree(root), control=control)
 
         self.assertGreaterEqual(control.checkpoint_calls, 2)
+
+    def test_payload_validation_checks_cancellation_during_large_xml(self) -> None:
+        payload = (
+            "<Root>" + "".join(f"<Item>{index}</Item>" for index in range(300)) + "</Root>"
+        ).encode("utf-8")
+        control = CancelAfterCheckpoints(3)
+
+        with self.assertRaises(OperationCancelled):
+            _validate_xml_payload(payload, control=control)
+
+        self.assertGreaterEqual(control.checkpoint_calls, 3)
+
+    def test_payload_validation_cancellation_happens_before_backup(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            original = destination.read_bytes()
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            backup_root = root / "Backups"
+            control = OperationControl()
+            real_validate = _validate_xml_payload
+
+            def cancel_validation(payload: bytes, *, control=None) -> None:
+                control.request_cancel()
+                real_validate(payload, control=control)
+
+            with patch(
+                "launchbox_tools.safe_write._validate_xml_payload",
+                side_effect=cancel_validation,
+            ):
+                transaction = execute_xml_transaction(
+                    [XmlMutation(destination, tree)],
+                    backup_root,
+                    control=control,
+                )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.CANCELLED)
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertFalse(backup_root.exists())
+            self.assertFalse(list(root.rglob("*.tmp")))
+
+    def test_malformed_serialized_payload_fails_before_backup(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root />", encoding="utf-8")
+            original = destination.read_bytes()
+            backup_root = root / "Backups"
+
+            with patch(
+                "launchbox_tools.safe_write._serialize_xml_tree",
+                return_value=b"<Root>",
+            ):
+                transaction = execute_xml_transaction(
+                    [XmlMutation(destination, ET.ElementTree(ET.Element("Root")))],
+                    backup_root,
+                )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertFalse(backup_root.exists())
 
     def test_sha256_checks_cancellation_between_io_chunks(self) -> None:
         with self.make_root() as temp_dir:
@@ -196,6 +260,24 @@ class SafeWriteTests(LaunchBoxTestCase):
                         write_xml_tree_safely(tree, destination)
 
             self.assertEqual(child_text(parse_xml(destination), "Value"), "old")
+            self.assertFalse(list(root.rglob("*.tmp")))
+
+    def test_write_xml_tree_safely_streams_without_materializing_payload(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+
+            with patch("launchbox_tools.safe_write.ensure_safe_to_mutate"):
+                with patch(
+                    "launchbox_tools.safe_write._serialize_xml_tree",
+                    side_effect=AssertionError("payload serialization must not be used"),
+                ):
+                    write_xml_tree_safely(tree, destination)
+
+            self.assertEqual(child_text(parse_xml(destination), "Value"), "new")
             self.assertFalse(list(root.rglob("*.tmp")))
 
     def test_reserve_unique_backup_root_reraises_non_collision_file_exists_error(self) -> None:

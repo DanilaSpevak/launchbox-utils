@@ -1,11 +1,48 @@
 from pathlib import Path
+from unittest.mock import patch
 from launchbox_tools.operations.audit import audit_platform
+from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl
 from launchbox_tools.xml_repository import load_platforms
 
 from test.support import LaunchBoxTestCase
 
 
 class AuditTests(LaunchBoxTestCase):
+    def test_audit_checks_cancellation_between_exists_probes(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/MissingFolder")
+            self.write_games_xml(
+                root,
+                [
+                    ("First Game", "Games/NES/first.zip"),
+                    ("Second Game", "Games/NES/second.zip"),
+                ],
+            )
+            platform = load_platforms(root)[0]
+            control = OperationControl()
+            real_exists = Path.exists
+            game_probe_count = 0
+
+            def cancel_after_first_game_probe(path: Path) -> bool:
+                nonlocal game_probe_count
+                exists = real_exists(path)
+                if path.suffix == ".zip":
+                    game_probe_count += 1
+                    if game_probe_count == 1:
+                        control.request_cancel()
+                return exists
+
+            with patch(
+                "pathlib.Path.exists",
+                autospec=True,
+                side_effect=cancel_after_first_game_probe,
+            ):
+                with self.assertRaises(OperationCancelled):
+                    audit_platform(platform, root, control=control)
+
+            self.assertEqual(game_probe_count, 1)
+
     def test_audit_platform_finds_missing_and_unregistered_files(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

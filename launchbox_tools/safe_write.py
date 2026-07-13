@@ -91,6 +91,30 @@ def _validate_xml_file(
     control.checkpoint()
 
 
+def _validate_xml_payload(
+    payload: bytes,
+    *,
+    control: OperationControl | None = None,
+) -> None:
+    if control is None:
+        ET.fromstring(payload)
+        return
+
+    control.checkpoint()
+    parser = ET.XMLPullParser(events=("end",))
+    event_count = 0
+    for offset in range(0, len(payload), _IO_CHUNK_SIZE):
+        control.checkpoint()
+        parser.feed(payload[offset : offset + _IO_CHUNK_SIZE])
+        for _event, _element in parser.read_events():
+            event_count += 1
+            if event_count % _XML_CHECKPOINT_INTERVAL == 0:
+                control.checkpoint()
+        control.checkpoint()
+    parser.close()
+    control.checkpoint()
+
+
 def backup_xml_file(
     xml_path: Path,
     backup_root: Path,
@@ -160,8 +184,7 @@ def write_xml_tree_safely(tree: ET.ElementTree, destination: Path) -> None:
     ensure_safe_to_mutate([destination])
     temp_path = destination.with_name(f".{destination.name}.{uuid4()}.tmp")
     try:
-        payload = _serialize_xml_tree(tree)
-        _write_bytes_with_checkpoints(temp_path, payload)
+        tree.write(temp_path, encoding="utf-8", xml_declaration=True)
         _validate_xml_file(temp_path)
         os.replace(temp_path, destination)
     finally:
@@ -238,7 +261,7 @@ def execute_xml_transaction(
                     raise FileNotFoundError(f"XML transaction destination not found: {destination}")
                 seen.add(canonical_destination)
                 payload = _serialize_xml_tree(mutation.tree, control=control)
-                ET.fromstring(payload)
+                _validate_xml_payload(payload, control=control)
                 serialized[destination] = payload
             except OperationCancelled:
                 raise

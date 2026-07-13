@@ -31,6 +31,19 @@ _CANONICAL_BOOLEAN_FIELDS = frozenset({"AutoRunBefore", "AutoRunAfter", "UseEmul
 _SCAN_CHECKPOINT_INTERVAL = 256
 
 
+class _CheckpointCounter:
+    def __init__(self, control: OperationControl | None) -> None:
+        self.control = control
+        self.count = 0
+
+    def tick(self) -> None:
+        if self.control is None:
+            return
+        self.count += 1
+        if self.count % _SCAN_CHECKPOINT_INTERVAL == 0:
+            self.control.checkpoint()
+
+
 def _normalize_xml_text(
     tag: str,
     text: str,
@@ -58,7 +71,10 @@ def _canonical_element(
     root: Path,
     is_entry_field: bool = False,
     include_tail: bool = False,
+    checkpoint_counter: _CheckpointCounter | None = None,
 ) -> CanonicalElement:
+    if checkpoint_counter is not None:
+        checkpoint_counter.tick()
     tag = local_name(element.tag)
     attributes = tuple(sorted(element.attrib.items()))
     children = tuple(
@@ -68,6 +84,7 @@ def _canonical_element(
                 root,
                 is_entry_field=tag == "AdditionalApplication",
                 include_tail=True,
+                checkpoint_counter=checkpoint_counter,
             )
             for child in element
         )
@@ -85,24 +102,55 @@ def additional_app_canonical_signature(entry: GameEntry, root: Path) -> Canonica
     return _canonical_element(entry.element, root)
 
 
-def _field_signatures(entry: GameEntry, root: Path) -> dict[str, tuple[CanonicalElement, ...]]:
+def _field_signatures(
+    entry: GameEntry,
+    root: Path,
+    checkpoint_counter: _CheckpointCounter | None = None,
+) -> dict[str, tuple[CanonicalElement, ...]]:
     if entry.element is None:
         return {}
     fields: dict[str, list[CanonicalElement]] = {}
     for child in entry.element:
-        fields.setdefault(local_name(child.tag), []).append(_canonical_element(child, root, is_entry_field=True))
+        fields.setdefault(local_name(child.tag), []).append(
+            _canonical_element(
+                child,
+                root,
+                is_entry_field=True,
+                checkpoint_counter=checkpoint_counter,
+            )
+        )
     return {name: tuple(sorted(values)) for name, values in fields.items()}
 
 
-def _differing_fields(variants: list[GameEntry], root: Path) -> tuple[str, ...]:
-    field_maps = [_field_signatures(entry, root) for entry in variants]
-    names = {name for fields in field_maps for name in fields}
-    differing = [name for name in names if len({fields.get(name) for fields in field_maps}) > 1]
-    root_attributes = [
-        tuple(sorted(entry.element.attrib.items()))
-        for entry in variants
-        if entry.element is not None
-    ]
+def _differing_fields(
+    variants: list[GameEntry],
+    root: Path,
+    checkpoint_counter: _CheckpointCounter | None = None,
+) -> tuple[str, ...]:
+    field_maps: list[dict[str, tuple[CanonicalElement, ...]]] = []
+    root_attributes: list[tuple[tuple[str, str], ...]] = []
+    for entry in variants:
+        if checkpoint_counter is not None:
+            checkpoint_counter.tick()
+        field_maps.append(_field_signatures(entry, root, checkpoint_counter))
+        if entry.element is not None:
+            root_attributes.append(tuple(sorted(entry.element.attrib.items())))
+
+    names: set[str] = set()
+    for fields in field_maps:
+        if checkpoint_counter is not None:
+            checkpoint_counter.tick()
+        names.update(fields)
+
+    differing: list[str] = []
+    for name in names:
+        signatures: set[tuple[CanonicalElement, ...] | None] = set()
+        for fields in field_maps:
+            if checkpoint_counter is not None:
+                checkpoint_counter.tick()
+            signatures.add(fields.get(name))
+        if len(signatures) > 1:
+            differing.append(name)
     if len(set(root_attributes)) > 1:
         differing.append("@attributes")
     return tuple(sorted(differing, key=str.casefold))
@@ -131,6 +179,7 @@ def find_additional_app_duplicates(
     duplicates: list[AdditionalApplicationDuplicate] = []
     ambiguities: list[AdditionalApplicationAmbiguity] = []
     warnings: list[str] = []
+    analysis_checkpoints = _CheckpointCounter(control)
 
     if control is not None:
         control.checkpoint()
@@ -145,7 +194,15 @@ def find_additional_app_duplicates(
             warnings.append(f"AdditionalApplication skipped for dedupe because GameID or ApplicationPath is empty: {entry.title}")
             continue
 
-        signature = additional_app_canonical_signature(entry, root)
+        signature = (
+            _canonical_element(
+                entry.element,
+                root,
+                checkpoint_counter=analysis_checkpoints,
+            )
+            if entry.element is not None
+            else None
+        )
         if signature is None:
             warnings.append(f"AdditionalApplication skipped for dedupe because XML content is unavailable: {entry.title}")
             continue
@@ -176,11 +233,51 @@ def find_additional_app_duplicates(
                 platform=platform,
                 key=key,
                 variants=tuple(variants),
-                differing_fields=_differing_fields(variants, root),
+                differing_fields=_differing_fields(
+                    variants,
+                    root,
+                    analysis_checkpoints,
+                ),
             )
         )
 
     return duplicates, ambiguities, warnings
+
+
+def _remove_duplicate_elements(
+    duplicates: list[AdditionalApplicationDuplicate],
+    *,
+    control: OperationControl | None = None,
+) -> None:
+    if control is not None:
+        control.checkpoint()
+    removals_by_parent: dict[int, tuple[ET.Element, set[int]]] = {}
+    removal_checkpoints = _CheckpointCounter(control)
+    for duplicate in duplicates:
+        parent = duplicate.duplicate.parent
+        element = duplicate.duplicate.element
+        if parent is None or element is None:
+            continue
+        removal_checkpoints.tick()
+        _parent, element_ids = removals_by_parent.setdefault(
+            id(parent),
+            (parent, set()),
+        )
+        element_ids.add(id(element))
+
+    filtered_children: list[tuple[ET.Element, list[ET.Element]]] = []
+    for parent, element_ids in removals_by_parent.values():
+        kept_children: list[ET.Element] = []
+        for child in parent:
+            removal_checkpoints.tick()
+            if id(child) not in element_ids:
+                kept_children.append(child)
+        filtered_children.append((parent, kept_children))
+
+    for parent, kept_children in filtered_children:
+        if control is not None:
+            control.checkpoint()
+        parent[:] = kept_children
 
 
 def dedupe_additional_apps_for_platform(
@@ -255,8 +352,7 @@ def dedupe_additional_apps_for_platform(
         )
         return result, MutationOutcome.FAILED, [], [file_result]
 
-    for duplicate in removable_duplicates:
-        duplicate.duplicate.parent.remove(duplicate.duplicate.element)
+    _remove_duplicate_elements(removable_duplicates, control=control)
 
     transaction = execute_xml_transaction(
         [XmlMutation(platform.database_xml, tree)],

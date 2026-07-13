@@ -4,6 +4,9 @@ from pathlib import Path
 from uuid import UUID
 from unittest.mock import patch
 from launchbox_tools.operations.dedupe_additional_apps import (
+    _CheckpointCounter,
+    _differing_fields,
+    _remove_duplicate_elements,
     find_additional_app_duplicates,
     run_additional_apps_dedupe,
 )
@@ -24,6 +27,109 @@ from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class DedupeAdditionalAppsTests(LaunchBoxTestCase):
+    def test_find_duplicates_checks_cancellation_inside_one_large_element(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            fields = "\n".join(f"    <CustomField>{index}</CustomField>" for index in range(300))
+            self.write_games_xml_raw(
+                root,
+                f"""  <AdditionalApplication>
+    <GameID>game-1</GameID>
+    <Name>Large application</Name>
+    <ApplicationPath>Games/NES/large.zip</ApplicationPath>
+{fields}
+  </AdditionalApplication>""",
+            )
+            platform = load_platforms(root)[0]
+            xml_root = parse_xml(platform.database_xml)
+            entries, _warnings = load_application_entries(
+                platform,
+                root,
+                xml_root,
+                include_xml_links=True,
+            )
+            control = CancelAfterCheckpoints(2)
+
+            with self.assertRaises(OperationCancelled):
+                find_additional_app_duplicates(platform, root, entries, control=control)
+
+            self.assertGreaterEqual(control.checkpoint_calls, 2)
+
+    def test_differing_fields_checks_cancellation_within_one_large_group(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            body = "\n".join(
+                f"""  <AdditionalApplication variant=\"{index}\">
+    <GameID>game-1</GameID>
+    <Name>Variant {index}</Name>
+    <ApplicationPath>Games/NES/variant.zip</ApplicationPath>
+  </AdditionalApplication>"""
+                for index in range(300)
+            )
+            self.write_games_xml_raw(root, body)
+            platform = load_platforms(root)[0]
+            xml_root = parse_xml(platform.database_xml)
+            entries, _warnings = load_application_entries(
+                platform,
+                root,
+                xml_root,
+                include_xml_links=True,
+            )
+            control = CancelAfterCheckpoints(2)
+
+            with self.assertRaises(OperationCancelled):
+                _differing_fields(entries, root, _CheckpointCounter(control))
+
+            self.assertGreaterEqual(control.checkpoint_calls, 2)
+
+    def test_duplicate_removal_is_cancellable_and_preserves_order(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            application = self.duplicate_additional_app_xml(
+                "game-1",
+                "Duplicate",
+                "Unused",
+                "Games/NES/duplicate.zip",
+            )
+            self.write_games_xml_raw(root, "\n".join(application for _ in range(301)))
+            platform = load_platforms(root)[0]
+            xml_path = platform.database_xml
+            original = xml_path.read_bytes()
+            xml_root = parse_xml(xml_path)
+            entries, _warnings = load_application_entries(
+                platform,
+                root,
+                xml_root,
+                include_xml_links=True,
+            )
+            duplicates, _ambiguities, _warnings = find_additional_app_duplicates(
+                platform,
+                root,
+                entries,
+            )
+            original_children = list(xml_root)
+
+            with self.assertRaises(OperationCancelled):
+                _remove_duplicate_elements(
+                    duplicates,
+                    control=CancelAfterCheckpoints(2),
+                )
+
+            self.assertEqual(list(xml_root), original_children)
+            self.assertEqual(xml_path.read_bytes(), original)
+
+            _remove_duplicate_elements(duplicates)
+
+            remaining = [
+                child
+                for child in xml_root
+                if local_name(child.tag) == "AdditionalApplication"
+            ]
+            self.assertEqual(len(remaining), 1)
+            self.assertIs(remaining[0], original_children[0])
     def test_dedupe_late_cancel_wins_before_success_manifest(self) -> None:
         class CancelAtFinalizeControl(OperationControl):
             def begin_finalize(self) -> None:

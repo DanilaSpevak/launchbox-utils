@@ -8,6 +8,23 @@ from ..paths import path_key
 from ..xml_repository import load_games, load_platforms
 
 
+_SCAN_CHECKPOINT_INTERVAL = 256
+
+
+def _find_missing_on_disk(
+    games: list[GameEntry],
+    *,
+    control: OperationControl | None = None,
+) -> list[GameEntry]:
+    missing: list[GameEntry] = []
+    for game in games:
+        if control is not None:
+            control.checkpoint()
+        if not game.resolved_path.exists():
+            missing.append(game)
+    return missing
+
+
 def scan_folder(
     folder: Path,
     *,
@@ -56,7 +73,7 @@ def audit_platform(
         database_paths[path_key(game.resolved_path)] = game
 
     if not platform.raw_folder:
-        result.missing_on_disk = [game for game in games if not game.resolved_path.exists()]
+        result.missing_on_disk = _find_missing_on_disk(games, control=control)
         result.missing_on_disk.sort(key=lambda game: (str(game.resolved_path).lower(), game.title.lower()))
         result.warnings.sort()
         return result
@@ -64,9 +81,11 @@ def audit_platform(
     folder_paths, folder_warnings = scan_folder(platform.folder, control=control)
     result.warnings.extend(folder_warnings)
     result.folder_count = len(folder_paths)
-    result.missing_on_disk = [game for game in games if not game.resolved_path.exists()]
+    result.missing_on_disk = _find_missing_on_disk(games, control=control)
 
-    for key, path in folder_paths.items():
+    for index, (key, path) in enumerate(folder_paths.items(), start=1):
+        if control is not None and index % _SCAN_CHECKPOINT_INTERVAL == 0:
+            control.checkpoint()
         if key not in database_paths:
             result.not_in_database.append(path)
 

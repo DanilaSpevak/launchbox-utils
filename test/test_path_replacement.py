@@ -3,15 +3,86 @@ import json
 from pathlib import Path
 from uuid import UUID
 from unittest.mock import patch
-from launchbox_tools.operations.path_replacement import build_replacement_value, run_path_replacement
-from launchbox_tools.models import MutationOutcome, MutationState
+from launchbox_tools.operations.path_replacement import (
+    _build_planned_file_results,
+    build_replacement_value,
+    run_path_replacement,
+)
+from launchbox_tools.models import (
+    MutationOutcome,
+    MutationState,
+    PathReplacement,
+    PathReplacementResult,
+    PlatformInfo,
+)
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl
 from launchbox_tools.xml_repository import child_text, local_name, parse_xml
 
-from test.support import LaunchBoxTestCase
+from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class PathReplacementTests(LaunchBoxTestCase):
+    def test_planned_file_aggregation_checks_cancellation_periodically(self) -> None:
+        platform = PlatformInfo("Platform", Path("Games"), Path("Platform.xml"))
+        result = PathReplacementResult(
+            platform=platform,
+            replacements=[
+                PathReplacement(
+                    platform=platform,
+                    xml_path=Path(f"Platform-{index}.xml"),
+                    entry_type="Game",
+                    title=f"Game {index}",
+                    old_value="old",
+                    new_value="new",
+                )
+                for index in range(300)
+            ],
+        )
+        control = CancelAfterCheckpoints(2)
+
+        with self.assertRaises(OperationCancelled):
+            _build_planned_file_results([result], control=control)
+
+        self.assertGreaterEqual(control.checkpoint_calls, 2)
+
+    def test_path_replacement_cancelled_while_aggregating_plan(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            xml_paths = [
+                root / "Data" / "Platforms.xml",
+                root / "Data" / "Platforms" / "Nintendo Entertainment System.xml",
+            ]
+            original_contents = {path: path.read_bytes() for path in xml_paths}
+
+            def cancel_plan(results, *, control=None):
+                if control is not None:
+                    control.request_cancel()
+                return _build_planned_file_results(results, control=control)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch(
+                    "launchbox_tools.operations.path_replacement._build_planned_file_results",
+                    side_effect=cancel_plan,
+                ):
+                    run_result = run_path_replacement(
+                        root,
+                        root / "Games" / "NES",
+                        root / "Games" / "SNES",
+                        apply_changes=True,
+                        control=OperationControl(),
+                    )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            self.assertEqual({path: path.read_bytes() for path in xml_paths}, original_contents)
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "cancelled")
+            files_by_path = {item["path"]: item for item in manifest["files"]}
+            for change in manifest["changes"]:
+                self.assertEqual(change["state"], files_by_path[change["xml_path"]]["state"])
+            self.assertFalse(list((root / "Data").rglob("*.tmp")))
+
     def test_path_replacement_late_cancel_wins_before_failed_manifest(self) -> None:
         class CancelAtFinalizeControl(OperationControl):
             def begin_finalize(self) -> None:

@@ -24,6 +24,9 @@ from ..safe_write import XmlMutation, execute_xml_transaction, reserve_unique_ba
 from ..xml_repository import child_text, load_platforms, local_name, parse_xml_tree
 
 
+_SCAN_CHECKPOINT_INTERVAL = 256
+
+
 def _application_path_child(element: ET.Element) -> ET.Element | None:
     for child in element:
         if local_name(child.tag) == "ApplicationPath":
@@ -256,10 +259,21 @@ def run_path_replacement(
 
 def _build_planned_file_results(
     results: list[PathReplacementResult],
+    *,
+    control: OperationControl | None = None,
 ) -> list[MutationFileResult]:
     planned_files_by_path: dict[Path, MutationFileResult] = {}
+    item_count = 0
+    if control is not None:
+        control.checkpoint()
     for result in results:
+        item_count += 1
+        if control is not None and item_count % _SCAN_CHECKPOINT_INTERVAL == 0:
+            control.checkpoint()
         for replacement in result.replacements:
+            item_count += 1
+            if control is not None and item_count % _SCAN_CHECKPOINT_INTERVAL == 0:
+                control.checkpoint()
             path = replacement.xml_path.resolve(strict=False)
             file_result = planned_files_by_path.setdefault(path, MutationFileResult(path))
             if replacement.error:
@@ -273,6 +287,9 @@ def _build_planned_file_results(
 
     for result in results:
         for replacement in result.replacements:
+            item_count += 1
+            if control is not None and item_count % _SCAN_CHECKPOINT_INTERVAL == 0:
+                control.checkpoint()
             replacement.state = planned_files_by_path[
                 replacement.xml_path.resolve(strict=False)
             ].state
@@ -361,6 +378,8 @@ def _run_path_replacement(
             except (ET.ParseError, OSError) as exc:
                 result.error = str(exc)
     except OperationCancelled as exc:
+        # Cancellation has won; finish the terminal snapshot without further
+        # checkpoints so its manifest covers every replacement found by scan.
         planned_files = _build_planned_file_results(results)
         run_result = MutationRunResult(
             results,
@@ -376,16 +395,42 @@ def _run_path_replacement(
             _write_path_replacement_manifest(run_result, backup_root)
         return run_result
 
-    for result in results:
-        result.warnings.sort()
-
-    planning_errors = [
-        error
-        for result in results
-        for error in ([result.error] if result.error else [])
-        + [replacement.error for replacement in result.replacements if replacement.error]
-    ]
-    planned_files = _build_planned_file_results(results)
+    try:
+        planning_errors: list[str] = []
+        planning_item_count = 0
+        for result in results:
+            if control is not None:
+                control.checkpoint()
+            result.warnings.sort()
+            if control is not None:
+                control.checkpoint()
+            if result.error:
+                planning_errors.append(result.error)
+            for replacement in result.replacements:
+                planning_item_count += 1
+                if (
+                    control is not None
+                    and planning_item_count % _SCAN_CHECKPOINT_INTERVAL == 0
+                ):
+                    control.checkpoint()
+                if replacement.error:
+                    planning_errors.append(replacement.error)
+        planned_files = _build_planned_file_results(results, control=control)
+    except OperationCancelled as exc:
+        planned_files = _build_planned_file_results(results)
+        run_result = MutationRunResult(
+            results,
+            MutationOutcome.CANCELLED,
+            str(exc),
+            files=planned_files,
+            run_id=run_id,
+        )
+        if control is not None:
+            control.set_phase(OperationPhase.FINALIZE)
+        if apply_changes:
+            backup_root = reserve_unique_backup_root(backup_parent, backup_name)
+            _write_path_replacement_manifest(run_result, backup_root)
+        return run_result
 
     if planning_errors:
         try:
