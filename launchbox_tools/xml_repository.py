@@ -4,7 +4,19 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .models import GameEntry, PlatformInfo
+from .operation_lifecycle import OperationControl
 from .paths import platform_database_path, resolve_launchbox_path
+
+
+_XML_CHECKPOINT_INTERVAL = 256
+
+
+def _checkpoint_periodically(
+    control: OperationControl | None,
+    index: int,
+) -> None:
+    if control is not None and index % _XML_CHECKPOINT_INTERVAL == 0:
+        control.checkpoint()
 
 
 def local_name(tag: str) -> str:
@@ -18,20 +30,41 @@ def child_text(element: ET.Element, child_name: str) -> str:
     return ""
 
 
-def parse_xml(path: Path) -> ET.Element:
-    return ET.parse(path).getroot()
+def parse_xml(
+    path: Path,
+    *,
+    control: OperationControl | None = None,
+) -> ET.Element:
+    return parse_xml_tree(path, control=control).getroot()
 
 
-def parse_xml_tree(path: Path) -> ET.ElementTree:
-    return ET.parse(path)
+def parse_xml_tree(
+    path: Path,
+    *,
+    control: OperationControl | None = None,
+) -> ET.ElementTree:
+    if control is None:
+        return ET.parse(path)
+
+    control.checkpoint()
+    iterator = ET.iterparse(path, events=("end",))
+    for index, _event in enumerate(iterator, start=1):
+        _checkpoint_periodically(control, index)
+    control.checkpoint()
+    return ET.ElementTree(iterator.root)
 
 
-def load_platforms(root: Path) -> list[PlatformInfo]:
+def load_platforms(
+    root: Path,
+    *,
+    control: OperationControl | None = None,
+) -> list[PlatformInfo]:
     platforms_xml = root / "Data" / "Platforms.xml"
-    xml_root = parse_xml(platforms_xml)
+    xml_root = parse_xml(platforms_xml, control=control)
     platforms: list[PlatformInfo] = []
 
-    for element in xml_root.iter():
+    for index, element in enumerate(xml_root.iter(), start=1):
+        _checkpoint_periodically(control, index)
         if local_name(element.tag) != "Platform":
             continue
 
@@ -58,21 +91,32 @@ def load_application_entries(
     root: Path,
     xml_root: ET.Element | None = None,
     include_xml_links: bool = False,
+    *,
+    control: OperationControl | None = None,
 ) -> tuple[list[GameEntry], list[str]]:
+    if control is not None:
+        control.checkpoint()
     warnings: list[str] = []
     if not platform.database_xml.exists():
         return [], [f"Platform XML not found: {platform.database_xml}"]
 
     if xml_root is None:
-        xml_root = parse_xml(platform.database_xml)
+        xml_root = parse_xml(platform.database_xml, control=control)
 
     parent_by_child: dict[int, ET.Element] = {}
     if include_xml_links:
-        parent_by_child = {id(child): parent for parent in xml_root.iter() for child in parent}
+        child_index = 0
+        for index, parent in enumerate(xml_root.iter(), start=1):
+            _checkpoint_periodically(control, index)
+            for child in parent:
+                child_index += 1
+                _checkpoint_periodically(control, child_index)
+                parent_by_child[id(child)] = parent
 
     entries: list[GameEntry] = []
 
-    for element in xml_root.iter():
+    for index, element in enumerate(xml_root.iter(), start=1):
+        _checkpoint_periodically(control, index)
         entry_type = local_name(element.tag)
         if entry_type not in {"Game", "AdditionalApplication"}:
             continue
@@ -99,5 +143,10 @@ def load_application_entries(
     return entries, warnings
 
 
-def load_games(platform: PlatformInfo, root: Path) -> tuple[list[GameEntry], list[str]]:
-    return load_application_entries(platform, root)
+def load_games(
+    platform: PlatformInfo,
+    root: Path,
+    *,
+    control: OperationControl | None = None,
+) -> tuple[list[GameEntry], list[str]]:
+    return load_application_entries(platform, root, control=control)

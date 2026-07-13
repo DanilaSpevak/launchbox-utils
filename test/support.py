@@ -4,6 +4,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from launchbox_tools.operation_lifecycle import OperationControl
+
+
+class CancelAfterCheckpoints(OperationControl):
+    def __init__(self, checkpoint_count: int) -> None:
+        super().__init__()
+        self.checkpoint_count = checkpoint_count
+        self.checkpoint_calls = 0
+
+    def checkpoint(self) -> None:
+        self.checkpoint_calls += 1
+        if self.checkpoint_calls == self.checkpoint_count:
+            self.request_cancel()
+        super().checkpoint()
+
 
 class LaunchBoxTestCase(unittest.TestCase):
     def make_root(self) -> tempfile.TemporaryDirectory:

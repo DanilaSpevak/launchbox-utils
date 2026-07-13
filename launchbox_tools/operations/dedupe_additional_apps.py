@@ -28,6 +28,7 @@ from ..xml_repository import load_application_entries, load_platforms, local_nam
 
 CanonicalElement = tuple[str, tuple[tuple[str, str], ...], str, str, tuple["CanonicalElement", ...]]
 _CANONICAL_BOOLEAN_FIELDS = frozenset({"AutoRunBefore", "AutoRunAfter", "UseEmulator"})
+_SCAN_CHECKPOINT_INTERVAL = 256
 
 
 def _normalize_xml_text(
@@ -123,13 +124,19 @@ def find_additional_app_duplicates(
     platform: PlatformInfo,
     root: Path,
     entries: list[GameEntry],
+    *,
+    control: OperationControl | None = None,
 ) -> tuple[list[AdditionalApplicationDuplicate], list[AdditionalApplicationAmbiguity], list[str]]:
     groups: dict[tuple[str, str], dict[CanonicalElement, GameEntry]] = {}
     duplicates: list[AdditionalApplicationDuplicate] = []
     ambiguities: list[AdditionalApplicationAmbiguity] = []
     warnings: list[str] = []
 
-    for entry in entries:
+    if control is not None:
+        control.checkpoint()
+    for index, entry in enumerate(entries, start=1):
+        if control is not None and index % _SCAN_CHECKPOINT_INTERVAL == 0:
+            control.checkpoint()
         if entry.entry_type != "AdditionalApplication":
             continue
 
@@ -158,7 +165,9 @@ def find_additional_app_duplicates(
             )
         )
 
-    for key, signatures in groups.items():
+    for index, (key, signatures) in enumerate(groups.items(), start=1):
+        if control is not None and index % _SCAN_CHECKPOINT_INTERVAL == 0:
+            control.checkpoint()
         if len(signatures) < 2:
             continue
         variants = list(signatures.values())
@@ -190,10 +199,21 @@ def dedupe_additional_apps_for_platform(
         result.warnings.append(f"Platform XML not found: {platform.database_xml}")
         return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, [], []
 
-    tree = parse_xml_tree(platform.database_xml)
-    entries, warnings = load_application_entries(platform, root, tree.getroot(), include_xml_links=True)
+    tree = parse_xml_tree(platform.database_xml, control=control)
+    entries, warnings = load_application_entries(
+        platform,
+        root,
+        tree.getroot(),
+        include_xml_links=True,
+        control=control,
+    )
     result.warnings.extend(warnings)
-    duplicates, ambiguities, dedupe_warnings = find_additional_app_duplicates(platform, root, entries)
+    duplicates, ambiguities, dedupe_warnings = find_additional_app_duplicates(
+        platform,
+        root,
+        entries,
+        control=control,
+    )
     if control is not None:
         control.checkpoint()
     result.duplicates = duplicates
@@ -295,11 +315,20 @@ def _run_additional_apps_dedupe(
     root = root.resolve(strict=False)
     if control is not None:
         control.set_phase(OperationPhase.SCAN)
-    platforms = load_platforms(root)
-    if platform_filter:
-        platforms = [platform for platform in platforms if platform.name.casefold() == platform_filter.casefold()]
+    platforms: list[PlatformInfo] = []
+    cancelled_error: str | None = None
+    try:
+        platforms = load_platforms(root, control=control)
+        if platform_filter:
+            platforms = [
+                platform
+                for platform in platforms
+                if platform.name.casefold() == platform_filter.casefold()
+            ]
+    except OperationCancelled as exc:
+        cancelled_error = str(exc)
 
-    if apply_changes:
+    if apply_changes and cancelled_error is None:
         xml_paths = [platform.database_xml for platform in platforms if platform.database_xml.exists()]
         ensure_safe_to_mutate(xml_paths)
 
@@ -315,7 +344,6 @@ def _run_additional_apps_dedupe(
     outcomes: list[MutationOutcome] = []
     rollback_errors: list[str] = []
     file_results: list[MutationFileResult] = []
-    cancelled_error: str | None = None
     for platform in platforms:
         try:
             if control is not None:

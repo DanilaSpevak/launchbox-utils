@@ -3,18 +3,75 @@ import json
 from pathlib import Path
 from uuid import UUID
 from unittest.mock import patch
-from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
+from launchbox_tools.operations.dedupe_additional_apps import (
+    find_additional_app_duplicates,
+    run_additional_apps_dedupe,
+)
 from launchbox_tools.runtime_checks import MutationBlockedError
 from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationState
-from launchbox_tools.operation_lifecycle import OperationControl
+from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl
 from launchbox_tools.reports.dedupe_reports import write_dedupe_reports
 from launchbox_tools.safe_write import XmlTransactionResult
-from launchbox_tools.xml_repository import child_text, local_name, parse_xml
+from launchbox_tools.xml_repository import (
+    child_text,
+    load_application_entries,
+    load_platforms,
+    local_name,
+    parse_xml,
+)
 
-from test.support import LaunchBoxTestCase
+from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class DedupeAdditionalAppsTests(LaunchBoxTestCase):
+    def test_dedupe_cancelled_before_scan_writes_empty_manifest(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            control = OperationControl()
+            control.request_cancel()
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                run_result = run_additional_apps_dedupe(
+                    root,
+                    apply_changes=True,
+                    control=control,
+                )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["changes"], [])
+            self.assertEqual(manifest["files"], [])
+
+    def test_find_duplicates_checks_cancellation_during_large_scan(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            body = "\n".join(
+                f"""  <AdditionalApplication>
+    <GameID>game-{index}</GameID>
+    <Name>Application {index}</Name>
+    <ApplicationPath>Games/NES/{index}.zip</ApplicationPath>
+  </AdditionalApplication>"""
+                for index in range(300)
+            )
+            self.write_games_xml_raw(root, body)
+            platform = load_platforms(root)[0]
+            xml_root = parse_xml(platform.database_xml)
+            entries, _warnings = load_application_entries(
+                platform,
+                root,
+                xml_root,
+                include_xml_links=True,
+            )
+            control = CancelAfterCheckpoints(2)
+
+            with self.assertRaises(OperationCancelled):
+                find_additional_app_duplicates(platform, root, entries, control=control)
+
+            self.assertGreaterEqual(control.checkpoint_calls, 2)
+
     def test_dedupe_cancelled_after_stage_writes_manifest_without_commit(self) -> None:
         class CancelAtCommitControl(OperationControl):
             def begin_commit(self) -> None:

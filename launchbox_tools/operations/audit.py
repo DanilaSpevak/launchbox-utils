@@ -45,7 +45,7 @@ def audit_platform(
     if not platform.raw_folder:
         result.warnings.append("Platform has an empty Folder value")
 
-    games, game_warnings = load_games(platform, root)
+    games, game_warnings = load_games(platform, root, control=control)
     result.warnings.extend(game_warnings)
     result.database_count = len(games)
 
@@ -85,7 +85,7 @@ def run_audit(
     if control is not None:
         control.set_phase(OperationPhase.SCAN)
         control.checkpoint()
-    platforms = load_platforms(root)
+    platforms = load_platforms(root, control=control)
     results: list[PlatformAuditResult] = []
     for platform in platforms:
         if control is not None:

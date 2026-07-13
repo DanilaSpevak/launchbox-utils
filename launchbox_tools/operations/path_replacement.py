@@ -181,7 +181,7 @@ def _collect_application_path_replacements(
         result.warnings.append(f"Platform XML not found: {platform.database_xml}")
         return None, False
 
-    tree = parse_xml_tree(platform.database_xml)
+    tree = parse_xml_tree(platform.database_xml, control=control)
     changed = False
     for element in tree.getroot().iter():
         if control is not None:
@@ -293,22 +293,10 @@ def _run_path_replacement(
     new_path = new_path.expanduser().resolve(strict=False)
     if control is not None:
         control.set_phase(OperationPhase.SCAN)
-    platforms = load_platforms(root)
-    if platform_filter:
-        platforms = [platform for platform in platforms if platform.name.casefold() == platform_filter.casefold()]
-
-    result_by_platform = {
-        platform.name.casefold(): PathReplacementResult(platform=platform)
-        for platform in platforms
-    }
-    results = list(result_by_platform.values())
-
+    platforms: list[PlatformInfo] = []
+    result_by_platform: dict[str, PathReplacementResult] = {}
+    results: list[PathReplacementResult] = []
     platforms_xml = root / "Data" / "Platforms.xml"
-    if apply_changes:
-        xml_paths = [platforms_xml]
-        xml_paths.extend(platform.database_xml for platform in platforms if platform.database_xml.exists())
-        ensure_safe_to_mutate(xml_paths)
-
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_parent = root / "Data" / "Backups"
     backup_name = f"PathReplacement-{timestamp}"
@@ -317,9 +305,31 @@ def _run_path_replacement(
     backup_root = backup_parent / backup_name
 
     try:
+        platforms = load_platforms(root, control=control)
+        if platform_filter:
+            platforms = [
+                platform
+                for platform in platforms
+                if platform.name.casefold() == platform_filter.casefold()
+            ]
+        result_by_platform = {
+            platform.name.casefold(): PathReplacementResult(platform=platform)
+            for platform in platforms
+        }
+        results = list(result_by_platform.values())
+
+        if apply_changes:
+            xml_paths = [platforms_xml]
+            xml_paths.extend(
+                platform.database_xml
+                for platform in platforms
+                if platform.database_xml.exists()
+            )
+            ensure_safe_to_mutate(xml_paths)
+
         if control is not None:
             control.checkpoint()
-        platforms_tree = parse_xml_tree(platforms_xml)
+        platforms_tree = parse_xml_tree(platforms_xml, control=control)
         platforms_changed = _collect_platform_folder_replacements(
             platforms_tree,
             result_by_platform,

@@ -14,7 +14,91 @@ from .operation_lifecycle import OperationCancelled, OperationControl, Operation
 from .runtime_checks import ensure_safe_to_mutate
 
 
-def backup_xml_file(xml_path: Path, backup_root: Path) -> Path:
+_IO_CHUNK_SIZE = 1024 * 1024
+_XML_CHECKPOINT_INTERVAL = 256
+
+
+class _CheckpointingTextSink:
+    def __init__(self, control: OperationControl) -> None:
+        self.buffer = io.BytesIO()
+        self.control = control
+        self.fragments_since_checkpoint = 0
+        self.bytes_since_checkpoint = 0
+
+    def write(self, text: str) -> int:
+        payload = text.encode("utf-8")
+        self.fragments_since_checkpoint += 1
+        self.bytes_since_checkpoint += len(payload)
+        if (
+            self.fragments_since_checkpoint >= _XML_CHECKPOINT_INTERVAL
+            or self.bytes_since_checkpoint >= _IO_CHUNK_SIZE
+        ):
+            self.control.checkpoint()
+            self.fragments_since_checkpoint = 0
+            self.bytes_since_checkpoint = 0
+        return self.buffer.write(payload)
+
+    def getvalue(self) -> bytes:
+        self.control.checkpoint()
+        return self.buffer.getvalue()
+
+
+def _serialize_xml_tree(
+    tree: ET.ElementTree,
+    *,
+    control: OperationControl | None = None,
+) -> bytes:
+    if control is None:
+        buffer = io.BytesIO()
+        tree.write(buffer, encoding="utf-8", xml_declaration=True)
+        return buffer.getvalue()
+
+    control.checkpoint()
+    sink = _CheckpointingTextSink(control)
+    tree.write(sink, encoding="unicode", xml_declaration=True)
+    return sink.getvalue()
+
+
+def _write_bytes_with_checkpoints(
+    path: Path,
+    payload: bytes,
+    *,
+    control: OperationControl | None = None,
+) -> None:
+    if control is not None:
+        control.checkpoint()
+    with path.open("wb") as file:
+        for offset in range(0, len(payload), _IO_CHUNK_SIZE):
+            if control is not None:
+                control.checkpoint()
+            file.write(payload[offset : offset + _IO_CHUNK_SIZE])
+
+
+def _validate_xml_file(
+    path: Path,
+    *,
+    control: OperationControl | None = None,
+) -> None:
+    if control is None:
+        ET.parse(path)
+        return
+
+    control.checkpoint()
+    iterator = ET.iterparse(path, events=("end",))
+    for index, _event in enumerate(iterator, start=1):
+        if index % _XML_CHECKPOINT_INTERVAL == 0:
+            control.checkpoint()
+    control.checkpoint()
+
+
+def backup_xml_file(
+    xml_path: Path,
+    backup_root: Path,
+    *,
+    control: OperationControl | None = None,
+) -> Path:
+    if control is not None:
+        control.checkpoint()
     ensure_safe_to_mutate([xml_path])
     backup_root.mkdir(parents=True, exist_ok=True)
     backup_path = backup_root / xml_path.name
@@ -22,7 +106,10 @@ def backup_xml_file(xml_path: Path, backup_root: Path) -> Path:
     try:
         with xml_path.open("rb") as source, backup_path.open("xb") as destination:
             created = True
-            shutil.copyfileobj(source, destination)
+            while chunk := source.read(_IO_CHUNK_SIZE):
+                if control is not None:
+                    control.checkpoint()
+                destination.write(chunk)
         shutil.copystat(xml_path, backup_path)
     except Exception:
         if created:
@@ -34,8 +121,13 @@ def backup_xml_file(xml_path: Path, backup_root: Path) -> Path:
     return backup_path
 
 
-def backup_platform_xml(platform: PlatformInfo, backup_root: Path) -> Path:
-    return backup_xml_file(platform.database_xml, backup_root)
+def backup_platform_xml(
+    platform: PlatformInfo,
+    backup_root: Path,
+    *,
+    control: OperationControl | None = None,
+) -> Path:
+    return backup_xml_file(platform.database_xml, backup_root, control=control)
 
 
 def reserve_unique_backup_root(backup_parent: Path, name: str) -> Path:
@@ -48,10 +140,18 @@ def reserve_unique_backup_root(backup_parent: Path, name: str) -> Path:
     return candidate
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(
+    path: Path,
+    *,
+    control: OperationControl | None = None,
+) -> str:
+    if control is not None:
+        control.checkpoint()
     digest = hashlib.sha256()
     with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+        for chunk in iter(lambda: file.read(_IO_CHUNK_SIZE), b""):
+            if control is not None:
+                control.checkpoint()
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -60,8 +160,9 @@ def write_xml_tree_safely(tree: ET.ElementTree, destination: Path) -> None:
     ensure_safe_to_mutate([destination])
     temp_path = destination.with_name(f".{destination.name}.{uuid4()}.tmp")
     try:
-        tree.write(temp_path, encoding="utf-8", xml_declaration=True)
-        ET.parse(temp_path)
+        payload = _serialize_xml_tree(tree)
+        _write_bytes_with_checkpoints(temp_path, payload)
+        _validate_xml_file(temp_path)
         os.replace(temp_path, destination)
     finally:
         try:
@@ -136,11 +237,11 @@ def execute_xml_transaction(
                 if not destination.is_file():
                     raise FileNotFoundError(f"XML transaction destination not found: {destination}")
                 seen.add(canonical_destination)
-                buffer = io.BytesIO()
-                mutation.tree.write(buffer, encoding="utf-8", xml_declaration=True)
-                payload = buffer.getvalue()
+                payload = _serialize_xml_tree(mutation.tree, control=control)
                 ET.fromstring(payload)
                 serialized[destination] = payload
+            except OperationCancelled:
+                raise
             except Exception as exc:
                 file_result.state = MutationState.FAILED
                 file_result.error = str(exc)
@@ -157,10 +258,14 @@ def execute_xml_transaction(
             for destination in destinations:
                 if control is not None:
                     control.checkpoint()
-                source_sha256 = sha256_file(destination)
-                backups[destination] = backup_xml_file(destination, backup_roots[destination])
+                source_sha256 = sha256_file(destination, control=control)
+                backups[destination] = backup_xml_file(
+                    destination,
+                    backup_roots[destination],
+                    control=control,
+                )
                 files_by_path[destination].backup_path = backups[destination]
-                backup_sha256 = sha256_file(backups[destination])
+                backup_sha256 = sha256_file(backups[destination], control=control)
                 if backup_sha256 != source_sha256:
                     raise OSError(f"Backup verification failed for {destination}")
                 files_by_path[destination].source_sha256 = source_sha256
@@ -180,8 +285,8 @@ def execute_xml_transaction(
                     f".{destination.name}.{transaction_id}.stage.tmp"
                 )
                 stage_paths[destination] = stage_path
-                stage_path.write_bytes(payload)
-                ET.parse(stage_path)
+                _write_bytes_with_checkpoints(stage_path, payload, control=control)
+                _validate_xml_file(stage_path, control=control)
                 files_by_path[destination].state = MutationState.PREPARED
         except OperationCancelled:
             raise

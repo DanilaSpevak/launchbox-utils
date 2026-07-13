@@ -1,21 +1,119 @@
+import io
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 from launchbox_tools.models import MutationOutcome, MutationState
-from launchbox_tools.operation_lifecycle import OperationControl, OperationPhase
+from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from launchbox_tools.safe_write import (
     XmlMutation,
+    _serialize_xml_tree,
+    _validate_xml_file,
+    _write_bytes_with_checkpoints,
     backup_xml_file,
     execute_xml_transaction,
     reserve_unique_backup_root,
+    sha256_file,
     write_xml_tree_safely,
 )
 from launchbox_tools.xml_repository import child_text, parse_xml
 
-from test.support import LaunchBoxTestCase
+from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class SafeWriteTests(LaunchBoxTestCase):
+    def test_cancellable_xml_serialization_matches_standard_bytes(self) -> None:
+        root = ET.Element("Root")
+        ET.SubElement(root, "Value", {"kind": "special"}).text = "A & B < C — Привет"
+        tree = ET.ElementTree(root)
+        expected = io.BytesIO()
+        tree.write(expected, encoding="utf-8", xml_declaration=True)
+
+        actual = _serialize_xml_tree(tree, control=OperationControl())
+
+        self.assertEqual(actual, expected.getvalue())
+
+    def test_xml_serialization_checks_cancellation_during_large_tree(self) -> None:
+        root = ET.Element("Root")
+        for index in range(300):
+            ET.SubElement(root, "Item").text = str(index)
+        control = CancelAfterCheckpoints(2)
+
+        with self.assertRaises(OperationCancelled):
+            _serialize_xml_tree(ET.ElementTree(root), control=control)
+
+        self.assertGreaterEqual(control.checkpoint_calls, 2)
+
+    def test_sha256_checks_cancellation_between_io_chunks(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "large.bin"
+            source.write_bytes(b"x" * (2 * 1024 * 1024))
+            control = CancelAfterCheckpoints(2)
+
+            with self.assertRaises(OperationCancelled):
+                sha256_file(source, control=control)
+
+            self.assertGreaterEqual(control.checkpoint_calls, 2)
+
+    def test_backup_cancellation_removes_incomplete_copy(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "database.xml"
+            source.write_bytes(b"x" * (2 * 1024 * 1024))
+            backup_root = root / "Backups"
+            control = CancelAfterCheckpoints(2)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with self.assertRaises(OperationCancelled):
+                    backup_xml_file(source, backup_root, control=control)
+
+            self.assertFalse((backup_root / source.name).exists())
+
+    def test_stage_validation_checks_cancellation_during_large_xml(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            xml_path = root / "large.xml"
+            xml_path.write_text(
+                "<Root>" + "".join(f"<Item>{index}</Item>" for index in range(300)) + "</Root>",
+                encoding="utf-8",
+            )
+            control = CancelAfterCheckpoints(2)
+
+            with self.assertRaises(OperationCancelled):
+                _validate_xml_file(xml_path, control=control)
+
+            self.assertGreaterEqual(control.checkpoint_calls, 2)
+
+    def test_transaction_cancellation_during_stage_write_cleans_temp(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            original = destination.read_bytes()
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            control = OperationControl()
+
+            def cancel_stage_write(path: Path, payload: bytes, *, control=None) -> None:
+                control.request_cancel()
+                _write_bytes_with_checkpoints(path, payload, control=control)
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch(
+                    "launchbox_tools.safe_write._write_bytes_with_checkpoints",
+                    side_effect=cancel_stage_write,
+                ):
+                    transaction = execute_xml_transaction(
+                        [XmlMutation(destination, tree)],
+                        root / "Backups",
+                        control=control,
+                    )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.CANCELLED)
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertFalse(control.snapshot().commit_started)
+            self.assertFalse(list(root.rglob("*.tmp")))
+
     def test_xml_transaction_cancelled_after_stage_does_not_commit(self) -> None:
         class CancelAtCommitControl(OperationControl):
             def begin_commit(self) -> None:
@@ -311,7 +409,10 @@ class SafeWriteTests(LaunchBoxTestCase):
             tree.getroot().find("Value").text = "new"
 
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
-                with patch("pathlib.Path.write_bytes", side_effect=OSError("stage denied")):
+                with patch(
+                    "launchbox_tools.safe_write._write_bytes_with_checkpoints",
+                    side_effect=OSError("stage denied"),
+                ):
                     transaction = execute_xml_transaction(
                         [XmlMutation(destination, tree)], root / "Backups"
                     )
