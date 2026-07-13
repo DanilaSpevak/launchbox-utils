@@ -5,13 +5,85 @@ from uuid import UUID
 from unittest.mock import patch
 from launchbox_tools.operations.path_replacement import build_replacement_value, run_path_replacement
 from launchbox_tools.models import MutationOutcome, MutationState
-from launchbox_tools.operation_lifecycle import OperationControl
+from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl
 from launchbox_tools.xml_repository import child_text, local_name, parse_xml
 
 from test.support import LaunchBoxTestCase
 
 
 class PathReplacementTests(LaunchBoxTestCase):
+    def test_path_replacement_cancelled_before_scan_writes_empty_consistent_manifest(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            control = OperationControl()
+            control.request_cancel()
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                run_result = run_path_replacement(
+                    root,
+                    root / "Games" / "NES",
+                    root / "Games" / "SNES",
+                    apply_changes=True,
+                    control=control,
+                )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["changes"], [])
+            self.assertEqual(manifest["files"], [])
+
+    def test_path_replacement_cancelled_during_scan_keeps_manifest_files_consistent(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch(
+                    "launchbox_tools.operations.path_replacement._collect_application_path_replacements",
+                    side_effect=OperationCancelled("Operation cancelled"),
+                ):
+                    run_result = run_path_replacement(
+                        root,
+                        root / "Games" / "NES",
+                        root / "Games" / "SNES",
+                        apply_changes=True,
+                        control=OperationControl(),
+                    )
+
+            self.assertEqual(run_result.outcome, MutationOutcome.CANCELLED)
+            manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["changes"]), 1)
+            self.assertEqual(len(manifest["files"]), 1)
+            self.assertEqual(manifest["changes"][0]["xml_path"], manifest["files"][0]["path"])
+            self.assertEqual(manifest["changes"][0]["state"], "planned")
+            self.assertEqual(manifest["files"][0]["state"], "planned")
+
+    def test_path_replacement_scan_error_does_not_reserve_backup_root(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch(
+                    "launchbox_tools.operations.path_replacement._collect_platform_folder_replacements",
+                    side_effect=RuntimeError("scan failed"),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "scan failed"):
+                        run_path_replacement(
+                            root,
+                            root / "Games" / "NES",
+                            root / "Games" / "SNES",
+                            apply_changes=True,
+                            control=OperationControl(),
+                        )
+
+            backup_parent = root / "Data" / "Backups"
+            self.assertFalse(backup_parent.exists())
+
     def test_path_replacement_cancelled_after_stage_writes_manifest_without_commit(self) -> None:
         class CancelAtCommitControl(OperationControl):
             def begin_commit(self) -> None:

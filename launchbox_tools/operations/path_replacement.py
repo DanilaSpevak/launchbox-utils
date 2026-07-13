@@ -254,6 +254,31 @@ def run_path_replacement(
         )
 
 
+def _build_planned_file_results(
+    results: list[PathReplacementResult],
+) -> list[MutationFileResult]:
+    planned_files_by_path: dict[Path, MutationFileResult] = {}
+    for result in results:
+        for replacement in result.replacements:
+            path = replacement.xml_path.resolve(strict=False)
+            file_result = planned_files_by_path.setdefault(path, MutationFileResult(path))
+            if replacement.error:
+                file_result.state = MutationState.FAILED
+                file_result.error = replacement.error
+        if result.error:
+            path = result.platform.database_xml.resolve(strict=False)
+            file_result = planned_files_by_path.setdefault(path, MutationFileResult(path))
+            file_result.state = MutationState.FAILED
+            file_result.error = result.error
+
+    for result in results:
+        for replacement in result.replacements:
+            replacement.state = planned_files_by_path[
+                replacement.xml_path.resolve(strict=False)
+            ].state
+    return list(planned_files_by_path.values())
+
+
 def _run_path_replacement(
     root: Path,
     old_path: Path,
@@ -290,8 +315,6 @@ def _run_path_replacement(
     if run_id is not None:
         backup_name = f"{backup_name}-{run_id}"
     backup_root = backup_parent / backup_name
-    if apply_changes:
-        backup_root = reserve_unique_backup_root(backup_parent, backup_name)
 
     try:
         if control is not None:
@@ -328,15 +351,18 @@ def _run_path_replacement(
             except (ET.ParseError, OSError) as exc:
                 result.error = str(exc)
     except OperationCancelled as exc:
+        planned_files = _build_planned_file_results(results)
         run_result = MutationRunResult(
             results,
             MutationOutcome.CANCELLED,
             str(exc),
+            files=planned_files,
             run_id=run_id,
         )
         if control is not None:
             control.set_phase(OperationPhase.FINALIZE)
         if apply_changes:
+            backup_root = reserve_unique_backup_root(backup_parent, backup_name)
             _write_path_replacement_manifest(run_result, backup_root)
         return run_result
 
@@ -349,24 +375,10 @@ def _run_path_replacement(
         for error in ([result.error] if result.error else [])
         + [replacement.error for replacement in result.replacements if replacement.error]
     ]
-    planned_files_by_path: dict[Path, MutationFileResult] = {}
-    for result in results:
-        for replacement in result.replacements:
-            path = replacement.xml_path.resolve(strict=False)
-            file_result = planned_files_by_path.setdefault(path, MutationFileResult(path))
-            if replacement.error:
-                file_result.state = MutationState.FAILED
-                file_result.error = replacement.error
-        if result.error:
-            path = result.platform.database_xml.resolve(strict=False)
-            file_result = planned_files_by_path.setdefault(path, MutationFileResult(path))
-            file_result.state = MutationState.FAILED
-            file_result.error = result.error
+    planned_files = _build_planned_file_results(results)
 
-    planned_files = list(planned_files_by_path.values())
-    for result in results:
-        for replacement in result.replacements:
-            replacement.state = planned_files_by_path[replacement.xml_path.resolve(strict=False)].state
+    if apply_changes:
+        backup_root = reserve_unique_backup_root(backup_parent, backup_name)
 
     if planning_errors:
         run_result = MutationRunResult(
