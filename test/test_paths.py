@@ -43,7 +43,7 @@ class TrustedDatabasePathTests(LaunchBoxTestCase):
 
             self.assertEqual(
                 actual,
-                root.resolve() / "Data" / "Platforms" / "Nintendo — Япония 2.0.xml",
+                root / "Data" / "Platforms" / "Nintendo — Япония 2.0.xml",
             )
 
     def test_platform_database_path_rejects_invalid_windows_components(self) -> None:
