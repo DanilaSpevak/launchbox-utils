@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import csv
 import io
+import locale
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 
@@ -39,6 +41,7 @@ LAUNCHBOX_PROCESS_NAMES = (
     "BigBox.exe",
 )
 PROCESS_CHECK_TIMEOUT_SECONDS = 5.0
+TASKLIST_COMMAND = ("tasklist", "/FO", "CSV", "/NH")
 _LAUNCHBOX_PROCESS_KEYS = frozenset(name.casefold() for name in LAUNCHBOX_PROCESS_NAMES)
 
 
@@ -65,13 +68,44 @@ def _parse_tasklist_process_names(output: str) -> set[str]:
     return process_names
 
 
-def _windows_process_names(*, timeout: float) -> set[str]:
+def _windows_oem_encoding() -> str:
+    if sys.platform != "win32":
+        return locale.getpreferredencoding(False)
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_oem_cp = kernel32.GetOEMCP
+    get_oem_cp.argtypes = ()
+    get_oem_cp.restype = wintypes.UINT
+    code_page = int(get_oem_cp())
+    if code_page <= 0:
+        raise SafetyCheckError("GetOEMCP returned an invalid Windows code page")
+    return f"cp{code_page}"
+
+
+def _decode_windows_command_output(output: bytes | None, *, stream_name: str) -> str:
+    if not output:
+        return ""
+    try:
+        return output.decode(_windows_oem_encoding(), errors="strict")
+    except (LookupError, OSError, UnicodeError) as exc:
+        raise SafetyCheckError(
+            f"tasklist {stream_name} could not be decoded: {exc}"
+        ) from exc
+
+
+def _windows_process_names(
+    *,
+    timeout: float,
+    command: Sequence[str] = TASKLIST_COMMAND,
+) -> set[str]:
     creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     try:
         result = subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"],
+            list(command),
             capture_output=True,
-            text=True,
             check=False,
             creationflags=creationflags,
             timeout=timeout,
@@ -84,12 +118,18 @@ def _windows_process_names(*, timeout: float) -> set[str]:
         raise SafetyCheckError(f"tasklist could not be executed: {exc}") from exc
 
     if result.returncode != 0:
-        details = (result.stderr or result.stdout).strip()
+        details = (
+            _decode_windows_command_output(
+                result.stderr or result.stdout,
+                stream_name="diagnostics",
+            )
+        ).strip()
         suffix = f": {details}" if details else ""
         raise SafetyCheckError(
             f"tasklist failed with exit code {result.returncode}{suffix}"
         )
-    return _parse_tasklist_process_names(result.stdout)
+    output = _decode_windows_command_output(result.stdout, stream_name="output")
+    return _parse_tasklist_process_names(output)
 
 
 def is_launchbox_process_running(

@@ -13,7 +13,7 @@
 - [x] **Исправить GUI lifecycle во время операций.** Использовать non-daemon worker, обрабатывать `WM_DELETE_WINDOW`, не разрешать завершение процесса в commit/rollback-фазе и разрешать отмену только до commit. Проверить закрытие окна на стадиях scan, stage, commit и rollback.
 - [x] **Ограничить платформенные XML доверенным каталогом.** Имя платформы должно быть одним допустимым компонентом; canonical path обязан оставаться непосредственным потомком `Data/Platforms`. Для мутационных целей отклонять traversal, absolute/UNC paths, DOS reserved names, reparse points и junctions. Trusted boundary распространяется на source/backup, mutation lock, manifest и root-level stage/rollback workspace; late race прекращает дальнейшие commit и не оставляет внешние temp-артефакты.
 - [x] **Исправить Windows safety-check и сделать его fail-closed.** Объявить корректные WinAPI-сигнатуры, использовать `WinDLL(..., use_last_error=True)`, структурированно определять `LaunchBox.exe` и `BigBox.exe` без зависимости от локали `tasklist`, добавить timeout и повторную проверку непосредственно перед commit.
-- [ ] **Добавить реальные Windows integration-тесты safety-check.** Проверить эксклюзивный handle из отдельного процесса, запущенные LaunchBox и Big Box, access denied, локализованный вывод, ошибку/timeout диагностики и гонку между предварительной проверкой и commit.
+- [x] **Добавить реальные Windows integration-тесты safety-check.** Проверить эксклюзивный handle из отдельного процесса, запущенные LaunchBox и Big Box, access denied, локализованный вывод, ошибку/timeout диагностики и гонку между предварительной проверкой и commit.
 
 ## P1 — надежность операций и восстановление
 

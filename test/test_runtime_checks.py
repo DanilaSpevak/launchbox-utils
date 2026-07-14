@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from launchbox_tools.runtime_checks import (
     LAUNCHBOX_PROCESS_NAMES,
     PROCESS_CHECK_TIMEOUT_SECONDS,
+    TASKLIST_COMMAND,
     MutationBlockedError,
     SafetyCheckError,
     _is_file_locked_windows,
@@ -55,17 +56,23 @@ class RuntimeChecksTests(LaunchBoxTestCase):
         completed = subprocess.CompletedProcess(
             ["tasklist"],
             0,
-            stdout='"explorer.exe","123","Console","1","10,000 K"\r\n',
-            stderr="",
+            stdout=b'"explorer.exe","123","Console","1","10,000 K"\r\n',
+            stderr=b"",
         )
-        with patch("launchbox_tools.runtime_checks.subprocess.run", return_value=completed) as run:
-            names = _windows_process_names(timeout=PROCESS_CHECK_TIMEOUT_SECONDS)
+        with patch(
+            "launchbox_tools.runtime_checks._windows_oem_encoding",
+            return_value="utf-8",
+        ):
+            with patch(
+                "launchbox_tools.runtime_checks.subprocess.run",
+                return_value=completed,
+            ) as run:
+                names = _windows_process_names(timeout=PROCESS_CHECK_TIMEOUT_SECONDS)
 
         self.assertEqual(names, {"explorer.exe"})
         run.assert_called_once_with(
-            ["tasklist", "/FO", "CSV", "/NH"],
+            list(TASKLIST_COMMAND),
             capture_output=True,
-            text=True,
             check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             timeout=PROCESS_CHECK_TIMEOUT_SECONDS,
@@ -83,12 +90,16 @@ class RuntimeChecksTests(LaunchBoxTestCase):
         completed = subprocess.CompletedProcess(
             ["tasklist"],
             5,
-            stdout="",
-            stderr="Access denied",
+            stdout=b"",
+            stderr=b"Access denied",
         )
-        with patch("launchbox_tools.runtime_checks.subprocess.run", return_value=completed):
-            with self.assertRaisesRegex(SafetyCheckError, "exit code 5.*Access denied"):
-                _windows_process_names(timeout=PROCESS_CHECK_TIMEOUT_SECONDS)
+        with patch(
+            "launchbox_tools.runtime_checks._windows_oem_encoding",
+            return_value="utf-8",
+        ):
+            with patch("launchbox_tools.runtime_checks.subprocess.run", return_value=completed):
+                with self.assertRaisesRegex(SafetyCheckError, "exit code 5.*Access denied"):
+                    _windows_process_names(timeout=PROCESS_CHECK_TIMEOUT_SECONDS)
 
     def test_windows_process_snapshot_fails_closed_when_tasklist_cannot_start(self) -> None:
         with patch(
@@ -99,19 +110,22 @@ class RuntimeChecksTests(LaunchBoxTestCase):
                 _windows_process_names(timeout=PROCESS_CHECK_TIMEOUT_SECONDS)
 
     def test_windows_process_snapshot_fails_closed_on_decode_error(self) -> None:
-        decode_error = UnicodeDecodeError(
-            "cp1251",
-            b"\xff",
+        completed = subprocess.CompletedProcess(
+            ["tasklist"],
             0,
-            1,
-            "invalid tasklist output",
+            stdout=b"\xff",
+            stderr=b"",
         )
         with patch(
-            "launchbox_tools.runtime_checks.subprocess.run",
-            side_effect=decode_error,
+            "launchbox_tools.runtime_checks._windows_oem_encoding",
+            return_value="utf-8",
         ):
-            with self.assertRaisesRegex(SafetyCheckError, "could not be executed"):
-                _windows_process_names(timeout=PROCESS_CHECK_TIMEOUT_SECONDS)
+            with patch(
+                "launchbox_tools.runtime_checks.subprocess.run",
+                return_value=completed,
+            ):
+                with self.assertRaisesRegex(SafetyCheckError, "could not be decoded"):
+                    _windows_process_names(timeout=PROCESS_CHECK_TIMEOUT_SECONDS)
 
     def test_tasklist_parser_fails_closed_on_empty_or_malformed_output(self) -> None:
         for output in ("", "INFO: no matching tasks", '"broken","not-a-pid"'):
