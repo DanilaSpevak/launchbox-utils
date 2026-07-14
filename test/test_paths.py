@@ -16,7 +16,7 @@ from test.support import LaunchBoxTestCase, create_directory_junction, remove_di
 
 
 class TrustedDatabasePathTests(LaunchBoxTestCase):
-    def test_trusted_child_preserves_non_reparse_path_spelling(self) -> None:
+    def test_trusted_paths_preserve_non_reparse_root_spelling(self) -> None:
         short_root = (Path.cwd() / "RUNNER~1" / "LaunchBox").absolute()
         canonical_root = (Path.cwd() / "runneradmin" / "LaunchBox").absolute()
         parent = short_root / "Data"
@@ -28,8 +28,12 @@ class TrustedDatabasePathTests(LaunchBoxTestCase):
         with patch("launchbox_tools.paths.os.lstat", side_effect=FileNotFoundError):
             with patch.object(type(short_root), "resolve", canonicalize):
                 actual = ensure_trusted_direct_child(short_root, parent, destination)
+                metadata = platforms_metadata_path(short_root)
+                database = platform_database_path(short_root, "NES")
 
         self.assertEqual(actual, destination)
+        self.assertEqual(metadata, destination)
+        self.assertEqual(database, short_root / "Data" / "Platforms" / "NES.xml")
 
     def test_platform_database_path_accepts_valid_unicode_component(self) -> None:
         with self.make_root() as temp_dir:

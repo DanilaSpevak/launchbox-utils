@@ -333,7 +333,7 @@ def dedupe_additional_apps_for_platform(
     if not apply_changes or not duplicates:
         result.warnings.sort()
         files = (
-            [MutationFileResult(platform.database_xml.resolve(strict=False))]
+            [MutationFileResult(platform.database_xml.absolute())]
             if duplicates
             else []
         )
@@ -356,7 +356,7 @@ def dedupe_additional_apps_for_platform(
         result.state = MutationState.FAILED
         result.warnings.sort()
         file_result = MutationFileResult(
-            platform.database_xml.resolve(strict=False),
+            platform.database_xml.absolute(),
             state=MutationState.FAILED,
             error=error,
         )
@@ -374,7 +374,7 @@ def dedupe_additional_apps_for_platform(
             replace(duplicate, state=MutationState.PLANNED, error=error)
             for duplicate in result.duplicates
         ]
-        file_result = MutationFileResult(platform.database_xml.resolve(strict=False))
+        file_result = MutationFileResult(platform.database_xml.absolute())
         return result, MutationOutcome.CANCELLED, [], [file_result], None
 
     transaction = execute_xml_transaction(
@@ -420,7 +420,7 @@ def run_additional_apps_dedupe(
     *,
     control: OperationControl | None = None,
 ) -> MutationRunResult[AdditionalAppsDedupeResult]:
-    resolved_root = root.resolve(strict=False)
+    resolved_root = root.absolute()
     if not apply_changes:
         return _run_additional_apps_dedupe(
             resolved_root,
@@ -447,7 +447,7 @@ def _run_additional_apps_dedupe(
     run_id: str | None = None,
     control: OperationControl | None = None,
 ) -> MutationRunResult[AdditionalAppsDedupeResult]:
-    root = root.resolve(strict=False)
+    root = root.absolute()
     if control is not None:
         control.set_phase(OperationPhase.SCAN)
     platforms: list[PlatformInfo] = []
@@ -551,7 +551,7 @@ def _run_additional_apps_dedupe(
             outcomes.append(MutationOutcome.FAILED)
             file_results.append(
                 MutationFileResult(
-                    platform.database_xml.resolve(strict=False),
+                    platform.database_xml.absolute(),
                     state=MutationState.FAILED,
                     error=str(exc),
                 )

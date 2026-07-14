@@ -145,13 +145,13 @@ def _selected_launchbox_root(path: Path) -> Path:
     try:
         metadata = os.lstat(absolute)
     except FileNotFoundError:
-        return absolute.resolve(strict=False)
+        return absolute
 
     is_reparse = bool(
         getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
     )
     if not (is_reparse or stat.S_ISLNK(metadata.st_mode)):
-        return absolute.resolve(strict=False)
+        return absolute
 
     resolved = absolute.resolve(strict=False)
     canonical_parent = absolute.parent.resolve(strict=False)
