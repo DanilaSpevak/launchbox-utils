@@ -9,6 +9,7 @@ import launchbox_tools.safe_write as safe_write
 from launchbox_tools.models import MutationOutcome, MutationState
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from launchbox_tools.paths import UnsafeDatabasePathError
+from launchbox_tools.runtime_checks import MutationBlockedError
 from launchbox_tools.safe_write import (
     _MAX_XML_NAME_CHARACTERS,
     XmlMutation,
@@ -940,6 +941,106 @@ class SafeWriteTests(LaunchBoxTestCase):
             self.assertEqual(transaction.files[0].state, MutationState.PREPARED)
             self.assertEqual(child_text(parse_xml(destination), "Value"), "old")
             self.assertFalse(list(root.rglob("*.tmp")))
+
+    def test_xml_transaction_does_not_recreate_target_missing_at_final_check(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            safety_calls = 0
+
+            def remove_before_final_check(_paths: list[Path]) -> None:
+                nonlocal safety_calls
+                safety_calls += 1
+                if safety_calls == 3:
+                    destination.unlink()
+                    raise MutationBlockedError(
+                        "target disappeared",
+                        reason="safety_check_failed",
+                        details="CreateFileW reported a missing target",
+                    )
+
+            with patch(
+                "launchbox_tools.safe_write.ensure_safe_to_mutate",
+                side_effect=remove_before_final_check,
+            ):
+                with patch("launchbox_tools.safe_write._commit_staged_file") as commit:
+                    transaction = execute_xml_transaction(
+                        [XmlMutation(destination, tree)],
+                        root / "Backups",
+                    )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(transaction.files[0].state, MutationState.PREPARED)
+            self.assertEqual(transaction.blocked_reason, "safety_check_failed")
+            self.assertEqual(
+                transaction.blocked_details,
+                "CreateFileW reported a missing target",
+            )
+            self.assertFalse(destination.exists())
+            commit.assert_not_called()
+            self.assertFalse(list(root.rglob("*.tmp")))
+
+    def test_xml_transaction_runs_final_safety_check_directly_before_commit(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "database.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            control = OperationControl()
+            events: list[str] = []
+            real_checkpoint = control.checkpoint
+            real_begin_commit = control.begin_commit
+            real_commit = safe_write._commit_staged_file
+
+            def record_safety(_paths: list[Path]) -> None:
+                events.append("safety")
+
+            def record_begin_commit() -> None:
+                events.append("begin_commit")
+                real_begin_commit()
+
+            def record_checkpoint() -> None:
+                events.append("checkpoint")
+                real_checkpoint()
+
+            def record_commit(stage_path: Path, target: Path) -> None:
+                events.append("commit")
+                real_commit(stage_path, target)
+
+            with patch(
+                "launchbox_tools.safe_write.ensure_safe_to_mutate",
+                side_effect=record_safety,
+            ):
+                with patch.object(
+                    control,
+                    "checkpoint",
+                    side_effect=record_checkpoint,
+                ):
+                    with patch.object(
+                        control,
+                        "begin_commit",
+                        side_effect=record_begin_commit,
+                    ):
+                        with patch(
+                            "launchbox_tools.safe_write._commit_staged_file",
+                            side_effect=record_commit,
+                        ):
+                            transaction = execute_xml_transaction(
+                                [XmlMutation(destination, tree)],
+                                root / "Backups",
+                                control=control,
+                            )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.SUCCESS)
+            self.assertEqual(
+                events[-4:],
+                ["checkpoint", "safety", "begin_commit", "commit"],
+            )
+            self.assertEqual(child_text(parse_xml(destination), "Value"), "new")
 
     def test_xml_transaction_rechecks_trusted_path_immediately_before_commit(self) -> None:
         with self.make_root() as temp_dir:

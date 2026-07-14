@@ -392,6 +392,8 @@ def dedupe_additional_apps_for_platform(
     )
     result.backup_path = transaction.backup_paths.get(platform.database_xml.resolve(strict=False))
     result.error = transaction.error
+    result.error_reason = transaction.blocked_reason
+    result.error_details = transaction.blocked_details
     if transaction.files:
         file_result = transaction.files[0]
         result.state = file_result.state

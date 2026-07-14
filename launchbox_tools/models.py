@@ -105,6 +105,8 @@ class AdditionalAppsDedupeResult:
     backup_path: Path | None = None
     state: MutationState | None = None
     error: str | None = None
+    error_reason: str | None = None
+    error_details: str | None = None
 
 
 @dataclass
@@ -145,3 +147,5 @@ class PathReplacementResult:
     warnings: list[str] = field(default_factory=list)
     backup_paths: list[Path] = field(default_factory=list)
     error: str | None = None
+    error_reason: str | None = None
+    error_details: str | None = None

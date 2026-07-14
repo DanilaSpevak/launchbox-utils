@@ -258,10 +258,10 @@ python launchbox_utils.py dedupe-additional-apps --only-with-findings
 
 Before `--apply`, the utility automatically checks:
 
-- whether LaunchBox is running (`LaunchBox.exe`, `LaunchBox Big Box.exe`);
+- whether LaunchBox is running (`LaunchBox.exe`, `BigBox.exe`);
 - whether platform XML files are locked by another process.
 
-If either condition is true, the operation aborts with an error. In the CLI the message goes to stderr and the program exits with code 1; in the GUI a dialog is shown.
+If either condition is true, or Windows cannot complete the process/file diagnostics within the safety timeout, the operation fails closed without changing XML. In the CLI the message goes to stderr and the program exits with code 1; in the GUI a dialog is shown. The checks run again after staging, immediately before commit.
 
 ```powershell
 python launchbox_utils.py dedupe-additional-apps --apply
@@ -670,10 +670,10 @@ python launchbox_utils.py dedupe-additional-apps --only-with-findings
 
 Перед `--apply` утилита автоматически проверяет:
 
-- не запущен ли LaunchBox (`LaunchBox.exe`, `LaunchBox Big Box.exe`);
+- не запущен ли LaunchBox (`LaunchBox.exe`, `BigBox.exe`);
 - не заблокированы ли XML-файлы платформ другим процессом.
 
-Если хотя бы одно условие выполняется, операция прерывается с ошибкой. В CLI сообщение выводится в stderr и программа завершается с кодом 1; в GUI показывается диалог.
+Если хотя бы одно условие выполняется либо Windows не может завершить диагностику процессов/файлов за отведённое время, операция блокируется по принципу fail-closed без изменения XML. В CLI сообщение выводится в stderr и программа завершается с кодом 1; в GUI показывается диалог. После подготовки временных файлов проверки повторяются непосредственно перед commit.
 
 ```powershell
 python launchbox_utils.py dedupe-additional-apps --apply

@@ -13,7 +13,7 @@ from uuid import uuid4
 from .models import MutationFileResult, MutationOutcome, MutationState, PlatformInfo
 from .operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from .paths import UnsafeDatabasePathError, ensure_trusted_direct_child
-from .runtime_checks import ensure_safe_to_mutate
+from .runtime_checks import MutationBlockedError, ensure_safe_to_mutate
 from .xml_checkpoint_io import (
     IO_CHUNK_SIZE,
     XML_CHECKPOINT_INTERVAL,
@@ -635,6 +635,16 @@ def _unsafe_path_error(exc: Exception) -> UnsafeDatabasePathError | None:
     return exc if isinstance(exc, UnsafeDatabasePathError) else None
 
 
+def _blocked_reason(exc: Exception) -> str | None:
+    return exc.reason if isinstance(exc, MutationBlockedError) else None
+
+
+def _blocked_details(exc: Exception) -> str | None:
+    if not isinstance(exc, MutationBlockedError):
+        return None
+    return exc.details or str(exc)
+
+
 @dataclass
 class XmlTransactionResult:
     outcome: MutationOutcome
@@ -643,6 +653,8 @@ class XmlTransactionResult:
     rollback_errors: list[str] = field(default_factory=list)
     files: list[MutationFileResult] = field(default_factory=list)
     unsafe_path_error: UnsafeDatabasePathError | None = None
+    blocked_reason: str | None = None
+    blocked_details: str | None = None
 
 
 def _commit_staged_file(stage_path: Path, destination: Path) -> None:
@@ -737,6 +749,8 @@ def execute_xml_transaction(
                     str(exc),
                     files=files,
                     unsafe_path_error=_unsafe_path_error(exc),
+                    blocked_reason=_blocked_reason(exc),
+                    blocked_details=_blocked_details(exc),
                 )
 
         destinations = list(serialized)
@@ -790,6 +804,8 @@ def execute_xml_transaction(
                 str(exc),
                 files=files,
                 unsafe_path_error=_unsafe_path_error(exc),
+                blocked_reason=_blocked_reason(exc),
+                blocked_details=_blocked_details(exc),
             )
 
         try:
@@ -830,7 +846,12 @@ def execute_xml_transaction(
                 str(exc),
                 files=files,
                 unsafe_path_error=_unsafe_path_error(exc),
+                blocked_reason=_blocked_reason(exc),
+                blocked_details=_blocked_details(exc),
             )
+
+        if control is not None:
+            control.checkpoint()
 
         try:
             for mutation, destination in zip(mutations, destinations):
@@ -844,10 +865,11 @@ def execute_xml_transaction(
                 str(exc),
                 files=files,
                 unsafe_path_error=_unsafe_path_error(exc),
+                blocked_reason=_blocked_reason(exc),
+                blocked_details=_blocked_details(exc),
             )
 
         if control is not None:
-            control.checkpoint()
             control.begin_commit()
 
         try:
@@ -937,6 +959,8 @@ def execute_xml_transaction(
             str(exc),
             files=files,
             unsafe_path_error=_unsafe_path_error(exc),
+            blocked_reason=_blocked_reason(exc),
+            blocked_details=_blocked_details(exc),
         )
     finally:
         cleanup_paths = [*stage_paths.values(), *rollback_paths]

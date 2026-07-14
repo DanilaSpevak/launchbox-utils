@@ -845,6 +845,8 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                         MutationState.PREPARED,
                     )
                 ],
+                blocked_reason="safety_check_failed",
+                blocked_details="tasklist timed out",
             )
 
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
@@ -868,6 +870,8 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
 
             self.assertEqual(run_result.results[0].duplicates[0].state, MutationState.PREPARED)
             self.assertEqual(run_result.results[0].duplicates[0].error, "precommit check failed")
+            self.assertEqual(run_result.results[0].error_reason, "safety_check_failed")
+            self.assertEqual(run_result.results[0].error_details, "tasklist timed out")
             self.assertEqual(rows[0]["state"], "prepared")
             self.assertEqual(rows[0]["error"], "precommit check failed")
             self.assertEqual(manifest["changes"][0]["state"], "prepared")

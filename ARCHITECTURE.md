@@ -191,10 +191,12 @@ Checks run after the apply operation has acquired the installation-wide mutation
 1. **Operation orchestrator** — `run_additional_apps_dedupe(..., apply_changes=True)` calls `ensure_safe_to_mutate()` once before processing platforms.
 2. **Write layer** — the transaction executor calls `ensure_safe_to_mutate()` before backup and again immediately before commit. This protects future callers that bypass the orchestrator.
 
-`ensure_safe_to_mutate(xml_paths)` aborts with `MutationBlockedError` when either condition is true:
+`ensure_safe_to_mutate(xml_paths)` aborts with `MutationBlockedError` when either condition is true or its result cannot be determined reliably:
 
-- a LaunchBox process is running (`LaunchBox.exe` or `LaunchBox Big Box.exe`, detected via `tasklist` on Windows);
+- a LaunchBox process is running (`LaunchBox.exe` or `BigBox.exe`); Windows process names come from one timeout-bound `tasklist /FO CSV /NH` snapshot, parsed as CSV without localized diagnostic strings;
 - any target XML file cannot be opened exclusively because another process holds a lock.
+
+The Windows file probe loads `kernel32` with `WinDLL(..., use_last_error=True)` and declares the `CreateFileW` / `CloseHandle` signatures explicitly. It probes every target even if a preceding existence check would report it missing, so disappearance before the guard cannot be treated as unlocked and recreated by commit. Process launch/timeout/non-zero-exit/malformed-output errors and unexpected WinAPI errors produce `reason="safety_check_failed"`; apply is blocked rather than treating an uncertain result as safe. The final cancellable checkpoint runs before the post-stage guard, so a successful guard is followed directly by the atomic `begin_commit()` cancellation boundary. Late structured safety reasons/details are retained in operation results for localized GUI reporting.
 
 Read-only operations (`audit`, dedupe dry-run) do not call these checks.
 

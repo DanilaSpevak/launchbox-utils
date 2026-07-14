@@ -854,6 +854,10 @@ class LaunchBoxUtilsApp:
     def mutation_blocked_message(self, exc: MutationBlockedError) -> str:
         if exc.reason == "launchbox_running":
             message = self.t("mutation_blocked_launchbox")
+        elif exc.reason == "safety_check_failed":
+            message = self.t("mutation_blocked_safety_check").format(
+                details=exc.details or exc
+            )
         elif exc.reason == "files_locked":
             if len(exc.locked_files) == 1:
                 message = self.t("mutation_blocked_files").format(path=exc.locked_files[0])
@@ -870,6 +874,24 @@ class LaunchBoxUtilsApp:
         else:
             message = str(exc)
         return message
+
+    def mutation_result_error_message(
+        self,
+        error: str | None,
+        reason: str | None,
+        details: str | None,
+    ) -> str:
+        if reason == "launchbox_running":
+            return self.t("mutation_blocked_launchbox")
+        if reason == "files_locked" and details:
+            if "\n" not in details:
+                return self.t("mutation_blocked_files").format(path=details)
+            return self.t("mutation_blocked_files_many").format(paths=details)
+        if reason == "safety_check_failed":
+            return self.t("mutation_blocked_safety_check").format(
+                details=details or error
+            )
+        return error or ""
 
     def show_mutation_blocked_error(self, exc: MutationBlockedError) -> None:
         messagebox.showerror(self.t("mutation_blocked_title"), self.mutation_blocked_message(exc))
@@ -977,7 +999,12 @@ class LaunchBoxUtilsApp:
                 if failed_results:
                     self.enqueue_log(f"{self.t('failed_platforms')}: {len(failed_results)}")
                     for result in failed_results:
-                        self.enqueue_log(f"  {result.platform.name}: {result.error}")
+                        message = self.mutation_result_error_message(
+                            result.error,
+                            result.error_reason,
+                            result.error_details,
+                        )
+                        self.enqueue_log(f"  {result.platform.name}: {message}")
                 for rollback_error in run_result.rollback_errors:
                     self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
                 self.log_mutation_report_status(output_dir, report_error, report_traceback)
@@ -1080,7 +1107,12 @@ class LaunchBoxUtilsApp:
                 if failed_results:
                     self.enqueue_log(f"{self.t('failed_platforms')}: {len(failed_results)}")
                     for result in failed_results:
-                        self.enqueue_log(f"  {result.platform.name}: {result.error}")
+                        message = self.mutation_result_error_message(
+                            result.error,
+                            result.error_reason,
+                            result.error_details,
+                        )
+                        self.enqueue_log(f"  {result.platform.name}: {message}")
                 for rollback_error in run_result.rollback_errors:
                     self.enqueue_log(f"{self.t('rollback_error')}: {rollback_error}")
                 self.log_mutation_report_status(output_dir, report_error, report_traceback)

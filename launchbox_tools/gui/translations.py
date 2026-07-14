@@ -108,6 +108,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "confirm_apply_message": "The operation will modify XML files after creating backups. Continue?",
         "mutation_blocked_title": "Cannot modify database",
         "mutation_blocked_launchbox": "LaunchBox is running. Close LaunchBox before modifying database files.",
+        "mutation_blocked_safety_check": (
+            "LaunchBox safety checks could not be completed, so no database files were changed.\n"
+            "{details}"
+        ),
         "mutation_blocked_files": "Database file is locked by another process:\n{path}",
         "mutation_blocked_files_many": "Database files are locked by another process:\n{paths}",
         "mutation_blocked_in_progress": (
@@ -239,6 +243,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "confirm_apply_message": "Операция изменит XML-файлы после создания резервной копии. Продолжить?",
         "mutation_blocked_title": "Невозможно изменить базу",
         "mutation_blocked_launchbox": "LaunchBox запущен. Закройте LaunchBox перед изменением файлов базы.",
+        "mutation_blocked_safety_check": (
+            "Не удалось завершить проверки безопасности LaunchBox, поэтому файлы базы не изменялись.\n"
+            "{details}"
+        ),
         "mutation_blocked_files": "Файл базы заблокирован другим процессом:\n{path}",
         "mutation_blocked_files_many": "Файлы базы заблокированы другим процессом:\n{paths}",
         "mutation_blocked_in_progress": (

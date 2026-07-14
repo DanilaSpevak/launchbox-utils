@@ -129,6 +129,42 @@ class GuiTests(LaunchBoxTestCase):
         self.assertIn("Run ID: active-run", joined)
         self.assertNotIn("Traceback", joined)
 
+    def test_gui_localizes_fail_closed_safety_check_error(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.t = lambda key: translate("ru", key)
+        error = MutationBlockedError(
+            "diagnostic details",
+            reason="safety_check_failed",
+        )
+
+        message = app.mutation_blocked_message(error)
+
+        self.assertIn("проверки безопасности LaunchBox", message)
+        self.assertIn("diagnostic details", message)
+
+    def test_gui_localizes_post_stage_running_and_locked_reasons(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        app.t = lambda key: translate("ru", key)
+
+        running = app.mutation_result_error_message(
+            "internal running error",
+            "launchbox_running",
+            None,
+        )
+        locked = app.mutation_result_error_message(
+            "internal locked error",
+            "files_locked",
+            "C:/LaunchBox/Data/Platforms/NES.xml",
+        )
+
+        self.assertEqual(running, translate("ru", "mutation_blocked_launchbox"))
+        self.assertIn("C:/LaunchBox/Data/Platforms/NES.xml", locked)
+        self.assertNotIn("internal locked error", locked)
+
     def test_gui_translations_support_russian_and_english(self) -> None:
         self.assertEqual(translate("en", "audit_group"), "Audit")
         self.assertEqual(translate("ru", "audit_group"), "Аудит")
@@ -288,6 +324,65 @@ class GuiTests(LaunchBoxTestCase):
         self.assertIn(f"Genesis: {error}", joined)
         self.assertNotIn("Unsafe database path", joined)
         write_reports.assert_called_once_with(run_result, Path("C:/Reports"), True, False)
+
+    def test_gui_dedupe_worker_localizes_post_stage_safety_failure(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        messages: list[str] = []
+        app.validate_paths = Mock(return_value=(Path("C:/LaunchBox"), Path("C:/Reports")))
+        app.audit_output_mode_var = Mock()
+        app.audit_output_mode_var.get.return_value = "all"
+        app.enqueue_log = messages.append
+        app.t = lambda key: translate("ru", key)
+        app.start_worker = lambda _message, worker: worker(OperationControl())
+        platform = PlatformInfo(
+            "NES",
+            Path("C:/LaunchBox/Games/NES"),
+            Path("C:/LaunchBox/Data/Platforms/NES.xml"),
+        )
+        internal_error = (
+            "LaunchBox safety checks could not be completed; database mutation was blocked. "
+            "Details: tasklist timed out"
+        )
+        run_result = MutationRunResult(
+            [
+                AdditionalAppsDedupeResult(
+                    platform,
+                    state=MutationState.PREPARED,
+                    error=internal_error,
+                    error_reason="safety_check_failed",
+                    error_details="tasklist timed out",
+                )
+            ],
+            MutationOutcome.FAILED,
+            error=internal_error,
+            files=[
+                MutationFileResult(
+                    platform.database_xml,
+                    MutationState.PREPARED,
+                    error=internal_error,
+                )
+            ],
+        )
+
+        with patch(
+            "launchbox_tools.gui.app.load_platform_catalog",
+            return_value=Mock(platforms=()),
+        ):
+            with patch("launchbox_tools.gui.app.ensure_safe_to_mutate"):
+                with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
+                    with patch(
+                        "launchbox_tools.gui.app.run_additional_apps_dedupe",
+                        return_value=run_result,
+                    ):
+                        with patch("launchbox_tools.gui.app.write_dedupe_reports"):
+                            app.run_dedupe_operation(True)
+
+        joined = "\n".join(messages)
+        self.assertIn("Не удалось завершить проверки безопасности LaunchBox", joined)
+        self.assertIn("tasklist timed out", joined)
+        self.assertNotIn("LaunchBox safety checks could not be completed", joined)
 
     def test_gui_path_worker_preserves_outcome_and_logs_unexpected_report_traceback(self) -> None:
         from launchbox_tools.gui.app import LaunchBoxUtilsApp

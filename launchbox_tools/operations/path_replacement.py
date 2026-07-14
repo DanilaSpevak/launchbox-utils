@@ -541,6 +541,8 @@ def _run_path_replacement(
         for result in results:
             if result.replacements:
                 result.error = transaction.error
+                result.error_reason = transaction.blocked_reason
+                result.error_details = transaction.blocked_details
 
     run_result = MutationRunResult(
         results,
