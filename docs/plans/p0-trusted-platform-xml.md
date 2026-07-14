@@ -45,8 +45,9 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 - Канонический XML является непосредственным потомком ожидаемого каталога.
 - После canonical resolve корня компоненты `Data`, `Platforms` и XML не являются
   reparse points; alias/junction на сам выбранный корень допустим.
-- Ошибка до запуска не создаёт backup/manifest. Ошибка после подготовки даёт
-  `FAILED`, не разрешает новый commit и отражается в manifest.
+- Ошибка до запуска не создаёт backup/manifest и остаётся доменным исключением.
+  После создания backup операция возвращает `FAILED` либо `PARTIAL`, не разрешает
+  новый commit и отражает фактический результат в manifest, CLI, GUI и отчётах.
 - Существующие состояния, outcome и cancellation semantics не меняются.
 
 ## Фазы, состояния и необратимые границы
@@ -72,7 +73,7 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 | `COM¹`–`COM³`, `LPT¹`–`LPT³` и варианты с расширением | Операция прекращается как для соответствующего ASCII DOS device name |
 | Reparse/junction в `Data`, `Platforms` или XML | Audit, dry-run и apply прекращаются fail-closed |
 | Junction появляется после catalog load, но до platform parse | Повторный read guard блокирует внешний XML до backup |
-| Junction появляется в dedupe после commit предыдущей платформы | Новые платформы не обрабатываются; manifest фиксирует фактический partial outcome |
+| Junction появляется в dedupe после commit предыдущей платформы | Новые платформы не обрабатываются; операция возвращает `PARTIAL`, а manifest, CLI, GUI и отчёты показывают committed и failed файлы |
 | Подмена пути после stage | Commit блокируется; подготовленный apply получает `FAILED` manifest |
 | Ошибка GUI до confirmation | Confirmation и worker не запускаются; traceback не показывается |
 

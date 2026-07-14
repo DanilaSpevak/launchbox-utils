@@ -129,6 +129,13 @@ Only one mutation may run for a LaunchBox installation at a time. Apply operatio
 
 `replace-paths` treats all changed XML files as one transaction. Additional Apps dedupe treats each platform XML as an independent transaction, so one failed platform does not undo successful changes to another platform. Mutation runs expose `dry_run`, `success`, `partial`, `failed`, `rolled_back`, or `cancelled`.
 
+If a trusted-path failure is detected before dedupe creates a backup, the operation
+raises `UnsafeDatabasePathError` and creates no mutation artifacts. If it is detected
+after an earlier platform transaction has created the backup root, dedupe stops before
+processing another platform and returns `MutationRunResult`: `partial` when a platform
+is already committed, otherwise `failed`. The manifest, CLI, GUI, and reports receive
+that same result instead of hiding it behind a terminal path exception.
+
 Long-running operations may receive an optional `OperationControl`. It publishes `scan`, `stage`, `commit`, `rollback`, `finalize`, and `finished` phases and provides cooperative cancellation checkpoints. XML parsing and validation use byte-bounded readers, and cancellable serialization splits text, attributes, escaping, and UTF-8 encoding into chunks whose encoded output is at most 1 MiB. Recursive entry analysis and namespace/planning traversal check at least every 256 events or fragments; namespace ordering is checkpoint-aware, and pathological XML names longer than 128 KiB are rejected before serialization. Hashing, backup copies, and staged writes check at least every 1 MiB, while filesystem existence probes check between paths. Cancellation races atomically with both commit and finalization: a cancellation request either wins while work is still cancellable or is rejected after the operation enters a protected terminal phase. A cancelled staged transaction keeps verified backups, removes temporary files, leaves XML unchanged, preserves `planned` / `prepared` file states, and records `outcome: cancelled` in the apply manifest.
 
 Path replacement maintains canonical file states incrementally during scan and binds each planned change to its file result, so repeated file errors remain O(1) and every change observes the current file state without a synchronization pass. A cancelled dry-run performs no terminal work proportional to the number of changes; snapshotting the much smaller file list remains O(F) in the number of affected XML files. A cancelled apply still writes one complete, atomic manifest during protected finalization. Transaction-state binding, backup mapping, and change serialization are combined into that single O(N) manifest traversal; incomplete manifests and background finalization are not used.

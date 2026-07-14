@@ -506,7 +506,7 @@ def _run_additional_apps_dedupe(
             outcomes.append(MutationOutcome.FAILED)
             file_results.append(
                 MutationFileResult(
-                    platform.database_xml.resolve(strict=False),
+                    platform.database_xml.absolute(),
                     state=MutationState.FAILED,
                     error=str(exc),
                 )
@@ -590,6 +590,4 @@ def _run_additional_apps_dedupe(
         if manifest_root is None:
             raise RuntimeError("Backup root was not initialized for apply manifest")
         write_mutation_manifest(run_result, manifest_root, "dedupe_additional_apps", changes)
-    if unsafe_path_error is not None:
-        raise unsafe_path_error
     return run_result

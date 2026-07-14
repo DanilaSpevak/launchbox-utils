@@ -15,7 +15,13 @@ from launchbox_tools.operations.dedupe_additional_apps import (
     run_additional_apps_dedupe,
 )
 from launchbox_tools.runtime_checks import MutationBlockedError
-from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationState
+from launchbox_tools.models import (
+    AdditionalAppsDedupeResult,
+    MutationFileResult,
+    MutationOutcome,
+    MutationState,
+    PlatformInfo,
+)
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl
 from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.reports.dedupe_reports import write_dedupe_reports
@@ -118,24 +124,39 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                         "launchbox_tools.runtime_checks.is_launchbox_process_running",
                         return_value=False,
                     ):
-                        with self.assertRaises(UnsafeDatabasePathError):
-                            run_additional_apps_dedupe(root, apply_changes=True)
+                        results = run_additional_apps_dedupe(root, apply_changes=True)
             finally:
                 if junction_created:
                     remove_directory_junction(platforms_dir)
                 if saved_dir.exists():
                     saved_dir.rename(platforms_dir)
 
-            manifests = list((root / "Data" / "Backups").glob("*/manifest.json"))
-            self.assertEqual(len(manifests), 1)
-            manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+            self.assertEqual(results.outcome, MutationOutcome.PARTIAL)
+            self.assertIsNotNone(results.manifest_path)
+            manifest = json.loads(results.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["outcome"], "partial")
             self.assertEqual(
                 [file_result["state"] for file_result in manifest["files"]],
                 ["committed", "failed"],
             )
             self.assertIn("reparse", manifest["error"].lower())
+            self.assertEqual(
+                Path(manifest["files"][1]["path"]),
+                root / "Data" / "Platforms" / "Sega Genesis.xml",
+            )
+            self.assertNotEqual(
+                Path(manifest["files"][1]["path"]),
+                external_dir / "Sega Genesis.xml",
+            )
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "<external-sentinel")
+            report_root = root / "Reports"
+            write_dedupe_reports(results, report_root, apply_changes=True)
+            summary = (report_root / "duplicate_additional_apps.csv").read_text(
+                encoding="utf-8-sig"
+            )
+            self.assertIn("partial", summary)
+            self.assertIn(str(results.manifest_path), summary)
+            self.assertIn("reparse", summary.lower())
             restored_root = parse_xml(
                 root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
             )
@@ -145,6 +166,80 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                 if local_name(element.tag) == "AdditionalApplication"
             ]
             self.assertEqual(len(remaining), 1)
+
+    def test_dedupe_late_trust_failure_without_commit_returns_failed_manifest(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            first = PlatformInfo(
+                "Nintendo Entertainment System",
+                root / "Games" / "NES",
+                root / "Data" / "Platforms" / "Nintendo Entertainment System.xml",
+            )
+            second = PlatformInfo(
+                "Sega Genesis",
+                root / "Games" / "Genesis",
+                root / "Data" / "Platforms" / "Sega Genesis.xml",
+            )
+            unsafe_error = UnsafeDatabasePathError(
+                "late unsafe path",
+                reason="reparse_point",
+                path=root / "Data" / "Platforms",
+                platform_name=second.name,
+            )
+            call_count = 0
+
+            def process_platform(
+                platform,
+                _root,
+                _apply_changes,
+                reserve_backup_root,
+                _run_id,
+                *,
+                control=None,
+            ):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 2:
+                    raise unsafe_error
+                reserve_backup_root()
+                error = "stage failed"
+                return (
+                    AdditionalAppsDedupeResult(
+                        platform=platform,
+                        state=MutationState.FAILED,
+                        error=error,
+                    ),
+                    MutationOutcome.FAILED,
+                    [],
+                    [
+                        MutationFileResult(
+                            platform.database_xml.absolute(),
+                            state=MutationState.FAILED,
+                            error=error,
+                        )
+                    ],
+                )
+
+            with patch.object(dedupe_operation, "load_platforms", return_value=[first, second]):
+                with patch.object(dedupe_operation, "existing_platform_database_paths", return_value=[]):
+                    with patch.object(dedupe_operation, "ensure_safe_to_mutate"):
+                        with patch.object(
+                            dedupe_operation,
+                            "dedupe_additional_apps_for_platform",
+                            side_effect=process_platform,
+                        ):
+                            results = run_additional_apps_dedupe(root, apply_changes=True)
+
+            self.assertEqual(results.outcome, MutationOutcome.FAILED)
+            self.assertEqual([item.state for item in results.files], [MutationState.FAILED] * 2)
+            self.assertIn("late unsafe path", results.error)
+            self.assertIsNotNone(results.manifest_path)
+            manifest = json.loads(results.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "failed")
+            self.assertEqual(
+                [file_result["state"] for file_result in manifest["files"]],
+                ["failed", "failed"],
+            )
 
     def test_dedupe_dry_run_fails_closed_for_unsafe_platform(self) -> None:
         with self.make_root() as temp_dir:

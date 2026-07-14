@@ -6,7 +6,14 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from launchbox_tools.config import load_configured_language, save_interface_language
 from launchbox_tools.gui.translations import translate
-from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationRunResult, MutationState
+from launchbox_tools.models import (
+    AdditionalAppsDedupeResult,
+    MutationFileResult,
+    MutationOutcome,
+    MutationRunResult,
+    MutationState,
+    PlatformInfo,
+)
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.runtime_checks import MutationBlockedError
@@ -218,6 +225,69 @@ class GuiTests(LaunchBoxTestCase):
         self.assertIn("Report error: OSError", joined)
         self.assertNotIn("Reports written to", joined)
         self.assertNotIn("Finished", joined)
+
+    def test_gui_dedupe_worker_surfaces_late_trust_failure_partial_result(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        messages: list[str] = []
+        app.validate_paths = Mock(return_value=(Path("C:/LaunchBox"), Path("C:/Reports")))
+        app.audit_output_mode_var = Mock()
+        app.audit_output_mode_var.get.return_value = "all"
+        app.enqueue_log = messages.append
+        app.t = lambda key: translate("en", key)
+        app.start_worker = lambda _message, worker: worker(OperationControl())
+        committed_platform = PlatformInfo(
+            "NES",
+            Path("C:/LaunchBox/Games/NES"),
+            Path("C:/LaunchBox/Data/Platforms/NES.xml"),
+        )
+        failed_platform = PlatformInfo(
+            "Genesis",
+            Path("C:/LaunchBox/Games/Genesis"),
+            Path("C:/LaunchBox/Data/Platforms/Genesis.xml"),
+        )
+        error = "unsafe platform path after prior commit"
+        manifest_path = Path("C:/LaunchBox/Data/Backups/run/manifest.json")
+        run_result = MutationRunResult(
+            [
+                AdditionalAppsDedupeResult(committed_platform, state=MutationState.COMMITTED),
+                AdditionalAppsDedupeResult(
+                    failed_platform,
+                    state=MutationState.FAILED,
+                    error=error,
+                ),
+            ],
+            MutationOutcome.PARTIAL,
+            error=error,
+            files=[
+                MutationFileResult(committed_platform.database_xml, MutationState.COMMITTED),
+                MutationFileResult(failed_platform.database_xml, MutationState.FAILED, error=error),
+            ],
+            manifest_path=manifest_path,
+        )
+
+        with patch(
+            "launchbox_tools.gui.app.load_platform_catalog",
+            return_value=Mock(platforms=()),
+        ):
+            with patch("launchbox_tools.gui.app.ensure_safe_to_mutate"):
+                with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
+                    with patch(
+                        "launchbox_tools.gui.app.run_additional_apps_dedupe",
+                        return_value=run_result,
+                    ):
+                        with patch("launchbox_tools.gui.app.write_dedupe_reports") as write_reports:
+                            app.run_dedupe_operation(True)
+
+        joined = "\n".join(messages)
+        self.assertIn(f"Outcome: {translate('en', 'outcome_partial')}", joined)
+        self.assertIn("Committed XML files: 1", joined)
+        self.assertIn("Failed XML files: 1", joined)
+        self.assertIn(f"Manifest: {manifest_path}", joined)
+        self.assertIn(f"Genesis: {error}", joined)
+        self.assertNotIn("Unsafe database path", joined)
+        write_reports.assert_called_once_with(run_result, Path("C:/Reports"), True, False)
 
     def test_gui_path_worker_preserves_outcome_and_logs_unexpected_report_traceback(self) -> None:
         from launchbox_tools.gui.app import LaunchBoxUtilsApp

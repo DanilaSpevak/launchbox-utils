@@ -5,7 +5,14 @@ from pathlib import Path
 from unittest.mock import patch
 from launchbox_tools.cli import _resolve_command, build_arg_parser, main
 from launchbox_tools.config import AppConfig
-from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationRunResult, MutationState
+from launchbox_tools.models import (
+    AdditionalAppsDedupeResult,
+    MutationFileResult,
+    MutationOutcome,
+    MutationRunResult,
+    MutationState,
+    PlatformInfo,
+)
 from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.runtime_checks import MutationBlockedError
 
@@ -77,6 +84,54 @@ class CliTests(LaunchBoxTestCase):
                         exit_code = main(["dedupe-additional-apps", "--apply"])
 
         self.assertEqual(exit_code, 1)
+
+    def test_cli_surfaces_late_trust_failure_partial_result(self) -> None:
+        config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
+        committed_platform = PlatformInfo(
+            "NES",
+            Path("C:/LaunchBox/Games/NES"),
+            Path("C:/LaunchBox/Data/Platforms/NES.xml"),
+        )
+        failed_platform = PlatformInfo(
+            "Genesis",
+            Path("C:/LaunchBox/Games/Genesis"),
+            Path("C:/LaunchBox/Data/Platforms/Genesis.xml"),
+        )
+        error = "unsafe platform path after prior commit"
+        manifest_path = Path("C:/LaunchBox/Data/Backups/run/manifest.json")
+        run_result = MutationRunResult(
+            [
+                AdditionalAppsDedupeResult(committed_platform, state=MutationState.COMMITTED),
+                AdditionalAppsDedupeResult(
+                    failed_platform,
+                    state=MutationState.FAILED,
+                    error=error,
+                ),
+            ],
+            MutationOutcome.PARTIAL,
+            error=error,
+            files=[
+                MutationFileResult(committed_platform.database_xml, MutationState.COMMITTED),
+                MutationFileResult(failed_platform.database_xml, MutationState.FAILED, error=error),
+            ],
+            manifest_path=manifest_path,
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch("launchbox_tools.cli.load_app_config", return_value=config):
+            with patch("launchbox_tools.cli.run_additional_apps_dedupe", return_value=run_result):
+                with patch("launchbox_tools.cli.write_dedupe_reports") as write_reports:
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        exit_code = main(["dedupe-additional-apps", "--apply"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Outcome: partial", stdout.getvalue())
+        self.assertIn("XML files committed: 1", stdout.getvalue())
+        self.assertIn("XML files failed: 1", stdout.getvalue())
+        self.assertIn(f"Manifest: {manifest_path}", stdout.getvalue())
+        self.assertIn(f"Genesis: {error}", stderr.getvalue())
+        write_reports.assert_called_once_with(run_result, config.output_dir, True, False)
 
     def test_cli_returns_nonzero_for_manifest_error_without_changing_success_outcome(self) -> None:
         config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
