@@ -139,6 +139,28 @@ def normalize_trust_anchor(path: Path) -> Path:
     return absolute
 
 
+def _selected_launchbox_root(path: Path) -> Path:
+    """Canonicalize a selected root without rewriting an alias target's parent."""
+    absolute = _absolute_normalized(path)
+    try:
+        metadata = os.lstat(absolute)
+    except FileNotFoundError:
+        return absolute.resolve(strict=False)
+
+    is_reparse = bool(
+        getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+    )
+    if not (is_reparse or stat.S_ISLNK(metadata.st_mode)):
+        return absolute.resolve(strict=False)
+
+    resolved = absolute.resolve(strict=False)
+    canonical_parent = absolute.parent.resolve(strict=False)
+    try:
+        return absolute.parent / resolved.relative_to(canonical_parent)
+    except ValueError:
+        return resolved
+
+
 def _raise_unsafe_path(
     *,
     reason: str,
@@ -261,7 +283,7 @@ def ensure_trusted_direct_child(
 
 
 def platforms_metadata_path(root: Path) -> Path:
-    anchor = normalize_trust_anchor(root)
+    anchor = _selected_launchbox_root(root)
     parent = anchor / "Data"
     return ensure_trusted_direct_child(anchor, parent, parent / "Platforms.xml")
 
@@ -272,7 +294,15 @@ def ensure_platform_database_path(
     destination: Path,
 ) -> Path:
     validate_platform_name(platform_name)
-    anchor = normalize_trust_anchor(root)
+    anchor = _selected_launchbox_root(root)
+    return _ensure_platform_database_path_from_anchor(anchor, platform_name, destination)
+
+
+def _ensure_platform_database_path_from_anchor(
+    anchor: Path,
+    platform_name: str,
+    destination: Path,
+) -> Path:
     parent = anchor / "Data" / "Platforms"
     expected = _absolute_normalized(parent / f"{platform_name}.xml")
     candidate = _absolute_normalized(destination)
@@ -292,8 +322,9 @@ def ensure_platform_database_path(
 
 
 def platform_database_path(root: Path, platform_name: str) -> Path:
-    anchor = normalize_trust_anchor(root)
-    return ensure_platform_database_path(
+    validate_platform_name(platform_name)
+    anchor = _selected_launchbox_root(root)
+    return _ensure_platform_database_path_from_anchor(
         anchor,
         platform_name,
         anchor / "Data" / "Platforms" / f"{platform_name}.xml",
