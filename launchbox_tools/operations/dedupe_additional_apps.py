@@ -420,7 +420,7 @@ def run_additional_apps_dedupe(
     *,
     control: OperationControl | None = None,
 ) -> MutationRunResult[AdditionalAppsDedupeResult]:
-    resolved_root = root.resolve(strict=False)
+    resolved_root = root.absolute()
     if not apply_changes:
         return _run_additional_apps_dedupe(
             resolved_root,
@@ -447,7 +447,7 @@ def _run_additional_apps_dedupe(
     run_id: str | None = None,
     control: OperationControl | None = None,
 ) -> MutationRunResult[AdditionalAppsDedupeResult]:
-    root = root.resolve(strict=False)
+    root = root.absolute()
     if control is not None:
         control.set_phase(OperationPhase.SCAN)
     platforms: list[PlatformInfo] = []

@@ -123,6 +123,22 @@ def _absolute_normalized(path: Path) -> Path:
     return Path(os.path.abspath(path))
 
 
+def normalize_trust_anchor(path: Path) -> Path:
+    """Keep the caller's absolute path spelling unless the root itself is an alias."""
+    absolute = _absolute_normalized(path)
+    try:
+        metadata = os.lstat(absolute)
+    except FileNotFoundError:
+        return absolute
+
+    is_reparse = bool(
+        getattr(metadata, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+    )
+    if is_reparse or stat.S_ISLNK(metadata.st_mode):
+        return absolute.resolve(strict=False)
+    return absolute
+
+
 def _raise_unsafe_path(
     *,
     reason: str,
@@ -147,9 +163,14 @@ def ensure_trusted_direct_child(
     *,
     platform_name: str | None = None,
 ) -> Path:
-    anchor = trust_anchor.resolve(strict=False)
+    source_anchor = _absolute_normalized(trust_anchor)
+    anchor = normalize_trust_anchor(trust_anchor)
     parent = _absolute_normalized(trusted_parent)
     candidate = _absolute_normalized(destination)
+
+    if anchor != source_anchor:
+        parent = parent.resolve(strict=False)
+        candidate = candidate.resolve(strict=False)
 
     try:
         parent.relative_to(anchor)
@@ -167,25 +188,6 @@ def ensure_trusted_direct_child(
             path=candidate,
             platform_name=platform_name,
             detail=f"path is not an immediate child of {parent}",
-        )
-
-    try:
-        canonical_parent = parent.resolve(strict=False)
-        canonical_candidate = candidate.resolve(strict=False)
-    except (OSError, RuntimeError) as exc:
-        _raise_unsafe_path(
-            reason="path_metadata_error",
-            path=candidate,
-            platform_name=platform_name,
-            detail=f"canonical path could not be determined: {exc}",
-        )
-
-    if canonical_candidate.parent != canonical_parent:
-        _raise_unsafe_path(
-            reason="outside_trusted_directory",
-            path=candidate,
-            platform_name=platform_name,
-            detail=f"canonical path is not an immediate child of {canonical_parent}",
         )
 
     try:
@@ -225,11 +227,41 @@ def ensure_trusted_direct_child(
                 detail="reparse points, junctions, and symbolic links are not trusted",
             )
 
+    try:
+        canonical_anchor = anchor.resolve(strict=False)
+        canonical_parent = parent.resolve(strict=False)
+        canonical_candidate = candidate.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        _raise_unsafe_path(
+            reason="path_metadata_error",
+            path=candidate,
+            platform_name=platform_name,
+            detail=f"canonical path could not be determined: {exc}",
+        )
+
+    try:
+        canonical_parent.relative_to(canonical_anchor)
+    except ValueError:
+        _raise_unsafe_path(
+            reason="outside_trusted_directory",
+            path=candidate,
+            platform_name=platform_name,
+            detail=f"canonical path is outside trusted root {canonical_anchor}",
+        )
+
+    if canonical_candidate.parent != canonical_parent:
+        _raise_unsafe_path(
+            reason="outside_trusted_directory",
+            path=candidate,
+            platform_name=platform_name,
+            detail=f"canonical path is not an immediate child of {canonical_parent}",
+        )
+
     return candidate
 
 
 def platforms_metadata_path(root: Path) -> Path:
-    anchor = root.resolve(strict=False)
+    anchor = normalize_trust_anchor(root)
     parent = anchor / "Data"
     return ensure_trusted_direct_child(anchor, parent, parent / "Platforms.xml")
 
@@ -240,7 +272,7 @@ def ensure_platform_database_path(
     destination: Path,
 ) -> Path:
     validate_platform_name(platform_name)
-    anchor = root.resolve(strict=False)
+    anchor = normalize_trust_anchor(root)
     parent = anchor / "Data" / "Platforms"
     expected = _absolute_normalized(parent / f"{platform_name}.xml")
     candidate = _absolute_normalized(destination)
@@ -260,7 +292,7 @@ def ensure_platform_database_path(
 
 
 def platform_database_path(root: Path, platform_name: str) -> Path:
-    anchor = root.resolve(strict=False)
+    anchor = normalize_trust_anchor(root)
     return ensure_platform_database_path(
         anchor,
         platform_name,

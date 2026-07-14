@@ -12,7 +12,11 @@ from uuid import uuid4
 
 from .models import MutationFileResult, MutationOutcome, MutationState, PlatformInfo
 from .operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
-from .paths import UnsafeDatabasePathError, ensure_trusted_direct_child
+from .paths import (
+    UnsafeDatabasePathError,
+    ensure_trusted_direct_child,
+    normalize_trust_anchor,
+)
 from .runtime_checks import MutationBlockedError, ensure_safe_to_mutate
 from .xml_checkpoint_io import (
     IO_CHUNK_SIZE,
@@ -559,7 +563,7 @@ def _trusted_transaction_anchor(mutations: list[XmlMutation]) -> Path | None:
         if (mutation.trusted_parent is None) != (mutation.trust_anchor is None):
             raise ValueError("XmlMutation trusted_parent and trust_anchor must be provided together")
         if mutation.trust_anchor is not None:
-            anchors.append(mutation.trust_anchor.resolve(strict=False))
+            anchors.append(normalize_trust_anchor(mutation.trust_anchor))
 
     if not anchors:
         return None
