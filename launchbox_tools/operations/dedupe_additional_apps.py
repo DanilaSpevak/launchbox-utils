@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from ..models import (
@@ -20,10 +21,16 @@ from ..models import (
 from ..mutation_lock import mutation_run_lock
 from ..mutation_manifest import write_mutation_manifest
 from ..operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
-from ..paths import path_key, resolve_launchbox_path
+from ..paths import UnsafeDatabasePathError, path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import XmlMutation, execute_xml_transaction, reserve_unique_backup_root
-from ..xml_repository import load_application_entries, load_platforms, local_name, parse_xml_tree
+from ..xml_repository import (
+    existing_platform_database_paths,
+    load_application_entries,
+    load_platform_database_tree,
+    load_platforms,
+    local_name,
+)
 
 
 CanonicalElement = tuple[str, tuple[tuple[str, str], ...], str, str, tuple["CanonicalElement", ...]]
@@ -284,7 +291,7 @@ def dedupe_additional_apps_for_platform(
     platform: PlatformInfo,
     root: Path,
     apply_changes: bool,
-    backup_root: Path,
+    reserve_backup_root: Callable[[], Path],
     run_id: str | None = None,
     *,
     control: OperationControl | None = None,
@@ -292,11 +299,10 @@ def dedupe_additional_apps_for_platform(
     if control is not None:
         control.checkpoint()
     result = AdditionalAppsDedupeResult(platform=platform)
-    if not platform.database_xml.exists():
+    tree = load_platform_database_tree(platform, root, control=control)
+    if tree is None:
         result.warnings.append(f"Platform XML not found: {platform.database_xml}")
         return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, [], []
-
-    tree = parse_xml_tree(platform.database_xml, control=control)
     entries, warnings = load_application_entries(
         platform,
         root,
@@ -374,7 +380,7 @@ def dedupe_additional_apps_for_platform(
                 trust_anchor=root,
             )
         ],
-        backup_root,
+        reserve_backup_root(),
         run_id,
         control=control,
     )
@@ -444,7 +450,7 @@ def _run_additional_apps_dedupe(
         cancelled_error = str(exc)
 
     if apply_changes and cancelled_error is None:
-        xml_paths = [platform.database_xml for platform in platforms if platform.database_xml.exists()]
+        xml_paths = existing_platform_database_paths(root, platforms)
         ensure_safe_to_mutate(xml_paths)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -452,13 +458,19 @@ def _run_additional_apps_dedupe(
     backup_name = f"AdditionalAppsDedupe-{timestamp}"
     if run_id is not None:
         backup_name = f"{backup_name}-{run_id}"
-    backup_root = backup_parent / backup_name
-    if apply_changes:
-        backup_root = reserve_unique_backup_root(backup_parent, backup_name)
+    backup_root: Path | None = None
+
+    def ensure_backup_root() -> Path:
+        nonlocal backup_root
+        if backup_root is None:
+            backup_root = reserve_unique_backup_root(backup_parent, backup_name)
+        return backup_root
+
     results: list[AdditionalAppsDedupeResult] = []
     outcomes: list[MutationOutcome] = []
     rollback_errors: list[str] = []
     file_results: list[MutationFileResult] = []
+    unsafe_path_error: UnsafeDatabasePathError | None = None
     for platform in platforms:
         try:
             if control is not None:
@@ -468,7 +480,7 @@ def _run_additional_apps_dedupe(
                 platform,
                 root,
                 apply_changes,
-                backup_root,
+                ensure_backup_root,
                 run_id,
                 control=control,
             )
@@ -481,6 +493,24 @@ def _run_additional_apps_dedupe(
                 break
         except OperationCancelled as exc:
             cancelled_error = str(exc)
+            break
+        except UnsafeDatabasePathError as exc:
+            unsafe_path_error = exc
+            results.append(
+                AdditionalAppsDedupeResult(
+                    platform=platform,
+                    state=MutationState.FAILED,
+                    error=str(exc),
+                )
+            )
+            outcomes.append(MutationOutcome.FAILED)
+            file_results.append(
+                MutationFileResult(
+                    platform.database_xml.resolve(strict=False),
+                    state=MutationState.FAILED,
+                    error=str(exc),
+                )
+            )
             break
         except (ET.ParseError, OSError) as exc:
             results.append(
@@ -499,8 +529,11 @@ def _run_additional_apps_dedupe(
                 )
             )
 
+    if unsafe_path_error is not None and (not apply_changes or backup_root is None):
+        raise unsafe_path_error
+
     if control is not None:
-        if cancelled_error is not None:
+        if unsafe_path_error is not None or cancelled_error is not None:
             control.set_phase(OperationPhase.FINALIZE)
         else:
             try:
@@ -508,7 +541,10 @@ def _run_additional_apps_dedupe(
             except OperationCancelled as exc:
                 cancelled_error = str(exc)
 
-    if cancelled_error is not None:
+    if unsafe_path_error is not None:
+        committed_count = sum(1 for result in file_results if result.state == MutationState.COMMITTED)
+        outcome = MutationOutcome.PARTIAL if committed_count else MutationOutcome.FAILED
+    elif cancelled_error is not None:
         outcome = MutationOutcome.CANCELLED
     elif not apply_changes:
         outcome = MutationOutcome.FAILED if MutationOutcome.FAILED in outcomes else MutationOutcome.DRY_RUN
@@ -550,5 +586,10 @@ def _run_additional_apps_dedupe(
             for result in results
             for duplicate in result.duplicates
         ]
-        write_mutation_manifest(run_result, backup_root, "dedupe_additional_apps", changes)
+        manifest_root = backup_root if unsafe_path_error is not None else ensure_backup_root()
+        if manifest_root is None:
+            raise RuntimeError("Backup root was not initialized for apply manifest")
+        write_mutation_manifest(run_result, manifest_root, "dedupe_additional_apps", changes)
+    if unsafe_path_error is not None:
+        raise unsafe_path_error
     return run_result

@@ -22,6 +22,7 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 )
 _WINDOWS_MAX_COMPONENT_UTF16_UNITS = 255
 _FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_WINDOWS_DEVICE_DIGIT_TRANSLATION = str.maketrans({"¹": "1", "²": "2", "³": "3"})
 
 
 class UnsafeDatabasePathError(RuntimeError):
@@ -97,7 +98,12 @@ def validate_platform_name(platform_name: str) -> None:
     if platform_name.endswith((" ", ".")):
         _raise_invalid_platform_name(platform_name, "the name ends with a space or period")
 
-    device_name = platform_name.split(".", 1)[0].rstrip(" ").upper()
+    device_name = (
+        platform_name.split(".", 1)[0]
+        .rstrip(" ")
+        .translate(_WINDOWS_DEVICE_DIGIT_TRANSLATION)
+        .upper()
+    )
     if device_name in _WINDOWS_RESERVED_NAMES:
         _raise_invalid_platform_name(platform_name, "the name is reserved by Windows")
 

@@ -1,5 +1,7 @@
 import csv
 import json
+import sys
+import unittest
 from pathlib import Path
 from uuid import UUID
 from unittest.mock import patch
@@ -26,10 +28,124 @@ from launchbox_tools.xml_repository import (
     parse_xml,
 )
 
-from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
+from test.support import (
+    CancelAfterCheckpoints,
+    LaunchBoxTestCase,
+    create_directory_junction,
+    remove_directory_junction,
+)
 
 
 class DedupeAdditionalAppsTests(LaunchBoxTestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
+    def test_dedupe_rejects_junction_swapped_after_catalog_before_backup(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            self.write_games_xml(root, [("trusted", "Games/NES/trusted.zip")])
+            platforms_dir = root / "Data" / "Platforms"
+            saved_dir = root / "Data" / "TrustedPlatforms"
+            external_dir = root / "ExternalPlatforms"
+            external_dir.mkdir()
+            sentinel = external_dir / "Nintendo Entertainment System.xml"
+            sentinel.write_text("<external-sentinel", encoding="utf-8")
+            real_load_platforms = dedupe_operation.load_platforms
+            junction_created = False
+
+            def load_then_swap(*args, **kwargs):
+                nonlocal junction_created
+                platforms = real_load_platforms(*args, **kwargs)
+                platforms_dir.rename(saved_dir)
+                create_directory_junction(platforms_dir, external_dir)
+                junction_created = True
+                return platforms
+
+            try:
+                with patch.object(dedupe_operation, "load_platforms", side_effect=load_then_swap):
+                    with patch(
+                        "launchbox_tools.runtime_checks.is_launchbox_process_running",
+                        return_value=False,
+                    ):
+                        with self.assertRaises(UnsafeDatabasePathError) as context:
+                            run_additional_apps_dedupe(root, apply_changes=True)
+            finally:
+                if junction_created:
+                    remove_directory_junction(platforms_dir)
+                if saved_dir.exists():
+                    saved_dir.rename(platforms_dir)
+
+            self.assertEqual(context.exception.reason, "reparse_point")
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "<external-sentinel")
+            self.assertFalse((root / "Data" / "Backups").exists())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
+    def test_dedupe_late_trust_failure_writes_partial_manifest(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_two_platforms_xml(root)
+            self.write_platform_games_xml_raw(
+                root,
+                "Nintendo Entertainment System",
+                self.duplicate_additional_app_xml("game-1", "duplicate", "duplicate", "Games/a.exe"),
+            )
+            self.write_platform_games_xml_raw(root, "Sega Genesis", "  <Game />")
+            platforms_dir = root / "Data" / "Platforms"
+            saved_dir = root / "Data" / "TrustedPlatforms"
+            external_dir = root / "ExternalPlatforms"
+            external_dir.mkdir()
+            sentinel = external_dir / "Sega Genesis.xml"
+            sentinel.write_text("<external-sentinel", encoding="utf-8")
+            real_load_tree = dedupe_operation.load_platform_database_tree
+            load_count = 0
+            junction_created = False
+
+            def load_then_swap(*args, **kwargs):
+                nonlocal junction_created, load_count
+                load_count += 1
+                if load_count == 2:
+                    platforms_dir.rename(saved_dir)
+                    create_directory_junction(platforms_dir, external_dir)
+                    junction_created = True
+                return real_load_tree(*args, **kwargs)
+
+            try:
+                with patch.object(
+                    dedupe_operation,
+                    "load_platform_database_tree",
+                    side_effect=load_then_swap,
+                ):
+                    with patch(
+                        "launchbox_tools.runtime_checks.is_launchbox_process_running",
+                        return_value=False,
+                    ):
+                        with self.assertRaises(UnsafeDatabasePathError):
+                            run_additional_apps_dedupe(root, apply_changes=True)
+            finally:
+                if junction_created:
+                    remove_directory_junction(platforms_dir)
+                if saved_dir.exists():
+                    saved_dir.rename(platforms_dir)
+
+            manifests = list((root / "Data" / "Backups").glob("*/manifest.json"))
+            self.assertEqual(len(manifests), 1)
+            manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "partial")
+            self.assertEqual(
+                [file_result["state"] for file_result in manifest["files"]],
+                ["committed", "failed"],
+            )
+            self.assertIn("reparse", manifest["error"].lower())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "<external-sentinel")
+            restored_root = parse_xml(
+                root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            )
+            remaining = [
+                element
+                for element in restored_root.iter()
+                if local_name(element.tag) == "AdditionalApplication"
+            ]
+            self.assertEqual(len(remaining), 1)
+
     def test_dedupe_dry_run_fails_closed_for_unsafe_platform(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

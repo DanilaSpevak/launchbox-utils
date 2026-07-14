@@ -68,7 +68,7 @@ class GuiTests(LaunchBoxTestCase):
                     detail="the name is reserved by Windows",
                 )
 
-                with patch("launchbox_tools.gui.app.load_platforms", side_effect=error):
+                with patch("launchbox_tools.gui.app.load_platform_catalog", side_effect=error):
                     with patch("launchbox_tools.gui.app.messagebox.showerror") as showerror:
                         with patch("launchbox_tools.gui.app.messagebox.askyesno") as askyesno:
                             app.run_dedupe_operation(True)
@@ -104,7 +104,10 @@ class GuiTests(LaunchBoxTestCase):
             active_started_at="2026-07-12T12:00:00Z",
         )
 
-        with patch("launchbox_tools.gui.app.load_platforms", return_value=[]):
+        with patch(
+            "launchbox_tools.gui.app.load_platform_catalog",
+            return_value=Mock(platforms=()),
+        ):
             with patch("launchbox_tools.gui.app.ensure_safe_to_mutate"):
                 with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
                     with patch(
@@ -192,7 +195,10 @@ class GuiTests(LaunchBoxTestCase):
             manifest_path=Path("C:/LaunchBox/Backups/run/manifest.json"),
         )
 
-        with patch("launchbox_tools.gui.app.load_platforms", return_value=[]):
+        with patch(
+            "launchbox_tools.gui.app.load_platform_catalog",
+            return_value=Mock(platforms=()),
+        ):
             with patch("launchbox_tools.gui.app.ensure_safe_to_mutate"):
                 with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
                     with patch(
@@ -232,7 +238,10 @@ class GuiTests(LaunchBoxTestCase):
             manifest_path=Path("C:/LaunchBox/Backups/run/manifest.json"),
         )
 
-        with patch("launchbox_tools.gui.app.load_platforms", return_value=[]):
+        with patch(
+            "launchbox_tools.gui.app.load_platform_catalog",
+            return_value=Mock(platforms=()),
+        ):
             with patch("launchbox_tools.gui.app.ensure_safe_to_mutate"):
                 with patch("launchbox_tools.gui.app.messagebox.askyesno", return_value=True):
                     with patch(

@@ -1,9 +1,12 @@
 import hashlib
 import json
+import sys
+import unittest
 from dataclasses import asdict, replace
 from pathlib import Path
 from uuid import UUID
 from unittest.mock import patch
+import launchbox_tools.operations.path_replacement as path_operation
 from launchbox_tools.operations.path_replacement import (
     _PlannedFileIndex,
     build_replacement_value,
@@ -20,10 +23,61 @@ from launchbox_tools.operation_lifecycle import OperationCancelled, OperationCon
 from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.xml_repository import child_text, local_name, parse_xml
 
-from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
+from test.support import (
+    CancelAfterCheckpoints,
+    LaunchBoxTestCase,
+    create_directory_junction,
+    remove_directory_junction,
+)
 
 
 class PathReplacementTests(LaunchBoxTestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
+    def test_path_replacement_rejects_junction_swapped_after_catalog_before_backup(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/Old")
+            self.write_games_xml(root, [("trusted", "Games/Old/trusted.zip")])
+            platforms_dir = root / "Data" / "Platforms"
+            saved_dir = root / "Data" / "TrustedPlatforms"
+            external_dir = root / "ExternalPlatforms"
+            external_dir.mkdir()
+            sentinel = external_dir / "Nintendo Entertainment System.xml"
+            sentinel.write_text("<external-sentinel", encoding="utf-8")
+            real_load_catalog = path_operation.load_platform_catalog
+            junction_created = False
+
+            def load_then_swap(*args, **kwargs):
+                nonlocal junction_created
+                catalog = real_load_catalog(*args, **kwargs)
+                platforms_dir.rename(saved_dir)
+                create_directory_junction(platforms_dir, external_dir)
+                junction_created = True
+                return catalog
+
+            try:
+                with patch.object(path_operation, "load_platform_catalog", side_effect=load_then_swap):
+                    with patch(
+                        "launchbox_tools.runtime_checks.is_launchbox_process_running",
+                        return_value=False,
+                    ):
+                        with self.assertRaises(UnsafeDatabasePathError) as context:
+                            run_path_replacement(
+                                root,
+                                root / "Games" / "Old",
+                                root / "Games" / "New",
+                                apply_changes=True,
+                            )
+            finally:
+                if junction_created:
+                    remove_directory_junction(platforms_dir)
+                if saved_dir.exists():
+                    saved_dir.rename(platforms_dir)
+
+            self.assertEqual(context.exception.reason, "reparse_point")
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "<external-sentinel")
+            self.assertFalse((root / "Data" / "Backups").exists())
+
     def test_path_replacement_apply_rejects_unsafe_platform_before_backup(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

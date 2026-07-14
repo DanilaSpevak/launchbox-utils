@@ -21,6 +21,7 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 ## In scope
 
 - Строгая проверка имени платформы как одного допустимого Windows-компонента.
+- Учет superscript-вариантов `COM¹`–`COM³` и `LPT¹`–`LPT³` как DOS device names.
 - Lexical и canonical containment платформенных XML.
 - Запрет reparse points, junctions и symlink от канонического корня через `Data`
   до конечного XML.
@@ -38,6 +39,9 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 
 - Небезопасная платформа не пропускается молча: вся операция прекращается.
 - Dry-run и apply используют одинаковый набор доверенных XML.
+- `Platforms.xml` читается один раз в snapshot; список платформ и изменяемое дерево
+  получены из одного набора байтов.
+- Платформенный XML проверяется до existence probe, перед parse и после parse.
 - Канонический XML является непосредственным потомком ожидаемого каталога.
 - После canonical resolve корня компоненты `Data`, `Platforms` и XML не являются
   reparse points; alias/junction на сам выбранный корень допустим.
@@ -47,7 +51,7 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 
 ## Фазы, состояния и необратимые границы
 
-Путь проверяется при scan/load, в начале transaction, перед backup и stage,
+Путь проверяется до и после каждого repository read, в начале transaction, перед backup и stage,
 непосредственно перед каждым `os.replace` в commit и перед restore в rollback.
 Необратимой границей остаётся `begin_commit()`.
 
@@ -65,7 +69,10 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 | --- | --- |
 | Обычное Unicode-имя | XML остаётся непосредственным потомком `Data/Platforms` |
 | Traversal, absolute/UNC, DOS reserved, invalid или слишком длинное имя | Операция прекращается до чтения внешнего файла |
+| `COM¹`–`COM³`, `LPT¹`–`LPT³` и варианты с расширением | Операция прекращается как для соответствующего ASCII DOS device name |
 | Reparse/junction в `Data`, `Platforms` или XML | Audit, dry-run и apply прекращаются fail-closed |
+| Junction появляется после catalog load, но до platform parse | Повторный read guard блокирует внешний XML до backup |
+| Junction появляется в dedupe после commit предыдущей платформы | Новые платформы не обрабатываются; manifest фиксирует фактический partial outcome |
 | Подмена пути после stage | Commit блокируется; подготовленный apply получает `FAILED` manifest |
 | Ошибка GUI до confirmation | Confirmation и worker не запускаются; traceback не показывается |
 
@@ -73,7 +80,7 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 
 - Табличные unit-тесты всех классов имён и canonical containment.
 - Sentinel-тесты подтверждают отсутствие чтения и записи вне LaunchBox root.
-- Реальный Windows junction-тест и тест повторной pre-commit проверки.
+- Реальные Windows junction-тесты initial/late race и тест повторной pre-commit проверки.
 - Тесты dedupe, replace-paths, CLI и GUI error paths.
 - Реальный Tk smoke для ошибки до confirmation.
 - `python -m unittest discover -s test -p "test_*.py" -v`
@@ -87,3 +94,7 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 `Data/Platforms` через junction. Если это станет обязательным сценарием, нужен
 отдельный контракт явно подтверждённого физического `Data`, а не автоматическое
 доверие любому junction.
+
+Pre/post-read guards сужают окно подмены, но не устраняют микрогонку между
+последней проверкой и `open`. Полное устранение требует handle-relative WinAPI и
+остаётся отдельным follow-up вне этой задачи.

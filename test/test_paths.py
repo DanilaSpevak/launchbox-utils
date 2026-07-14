@@ -1,5 +1,4 @@
 import os
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -11,7 +10,7 @@ from launchbox_tools.paths import (
     platforms_metadata_path,
 )
 
-from test.support import LaunchBoxTestCase
+from test.support import LaunchBoxTestCase, create_directory_junction, remove_directory_junction
 
 
 class TrustedDatabasePathTests(LaunchBoxTestCase):
@@ -46,6 +45,12 @@ class TrustedDatabasePathTests(LaunchBoxTestCase):
             "COM1.arcade",
             "CON .txt",
             "LPT9",
+            "COM¹",
+            "com².arcade",
+            "COM³",
+            "LPT¹",
+            "lpt².txt",
+            "LPT³",
             "x" * 252,
             "bad\ud800name",
         )
@@ -67,22 +72,6 @@ class TrustedDatabasePathTests(LaunchBoxTestCase):
 
             self.assertEqual(context.exception.reason, "outside_trusted_directory")
 
-    @staticmethod
-    def _create_junction(link: Path, target: Path) -> None:
-        result = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise OSError(result.stderr.strip() or result.stdout.strip() or "mklink /J failed")
-
-    @staticmethod
-    def _remove_junction(path: Path) -> None:
-        if path.exists():
-            os.rmdir(path)
-
     @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
     def test_platforms_metadata_rejects_data_junction(self) -> None:
         with self.make_root() as temp_dir:
@@ -90,14 +79,14 @@ class TrustedDatabasePathTests(LaunchBoxTestCase):
             data = root / "Data"
             external_data = root / "ExternalData"
             data.rename(external_data)
-            self._create_junction(data, external_data)
+            create_directory_junction(data, external_data)
             try:
                 with self.assertRaises(UnsafeDatabasePathError) as context:
                     platforms_metadata_path(root)
                 self.assertEqual(context.exception.reason, "reparse_point")
                 self.assertEqual(context.exception.path, data)
             finally:
-                self._remove_junction(data)
+                remove_directory_junction(data)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows reparse integration test")
     def test_platform_database_rejects_file_symlink(self) -> None:
@@ -125,9 +114,9 @@ class TrustedDatabasePathTests(LaunchBoxTestCase):
             physical_root = container / "PhysicalLaunchBox"
             (physical_root / "Data" / "Platforms").mkdir(parents=True)
             alias = container / "LaunchBoxAlias"
-            self._create_junction(alias, physical_root)
+            create_directory_junction(alias, physical_root)
             try:
                 actual = platform_database_path(alias, "NES")
                 self.assertEqual(actual, physical_root / "Data" / "Platforms" / "NES.xml")
             finally:
-                self._remove_junction(alias)
+                remove_directory_junction(alias)

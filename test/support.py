@@ -1,10 +1,28 @@
 """Shared test fixtures for temporary LaunchBox trees."""
 
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from launchbox_tools.operation_lifecycle import OperationControl
+
+
+def create_directory_junction(link: Path, target: Path) -> None:
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise OSError(result.stderr.strip() or result.stdout.strip() or "mklink /J failed")
+
+
+def remove_directory_junction(path: Path) -> None:
+    if path.exists():
+        os.rmdir(path)
 
 
 class CancelAfterCheckpoints(OperationControl):

@@ -27,7 +27,7 @@ from ..operations.dedupe_additional_apps import run_additional_apps_dedupe
 from ..operations.path_replacement import run_path_replacement
 from ..paths import UnsafeDatabasePathError, platforms_metadata_path
 from ..runtime_checks import MutationBlockedError, ensure_safe_to_mutate
-from ..xml_repository import load_platforms
+from ..xml_repository import existing_platform_database_paths, load_platform_catalog
 from ..reports.audit_reports import write_reports
 from ..reports.dedupe_reports import write_dedupe_reports
 from ..reports.path_replacement_reports import write_path_replacement_reports
@@ -923,8 +923,11 @@ class LaunchBoxUtilsApp:
         launchbox_root, output_dir = paths
         if apply_changes:
             try:
-                platforms = load_platforms(launchbox_root)
-                xml_paths = [platform.database_xml for platform in platforms if platform.database_xml.exists()]
+                catalog = load_platform_catalog(launchbox_root)
+                xml_paths = existing_platform_database_paths(
+                    launchbox_root,
+                    catalog.platforms,
+                )
                 ensure_safe_to_mutate(xml_paths)
             except MutationBlockedError as exc:
                 self.show_mutation_blocked_error(exc)
@@ -1022,9 +1025,11 @@ class LaunchBoxUtilsApp:
         old_path, new_path = replacement_paths
         if apply_changes:
             try:
-                platforms = load_platforms(launchbox_root)
+                catalog = load_platform_catalog(launchbox_root)
                 xml_paths = [platforms_metadata_path(launchbox_root)]
-                xml_paths.extend(platform.database_xml for platform in platforms if platform.database_xml.exists())
+                xml_paths.extend(
+                    existing_platform_database_paths(launchbox_root, catalog.platforms)
+                )
                 ensure_safe_to_mutate(xml_paths)
             except MutationBlockedError as exc:
                 self.show_mutation_blocked_error(exc)

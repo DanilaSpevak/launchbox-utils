@@ -21,7 +21,13 @@ from ..operation_lifecycle import OperationCancelled, OperationControl, Operatio
 from ..paths import path_key, platforms_metadata_path, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import XmlMutation, execute_xml_transaction, reserve_unique_backup_root
-from ..xml_repository import child_text, load_platforms, local_name, parse_xml_tree
+from ..xml_repository import (
+    child_text,
+    existing_platform_database_paths,
+    load_platform_catalog,
+    load_platform_database_tree,
+    local_name,
+)
 
 
 _SCAN_CHECKPOINT_INTERVAL = 256
@@ -151,6 +157,7 @@ def _append_replacement(
 
 def _collect_platform_folder_replacements(
     platforms_tree: ET.ElementTree,
+    platforms_xml: Path,
     result_by_platform: dict[str, PathReplacementResult],
     root: Path,
     old_path: Path,
@@ -161,7 +168,6 @@ def _collect_platform_folder_replacements(
     control: OperationControl | None = None,
 ) -> bool:
     changed = False
-    platforms_xml = platforms_metadata_path(root)
     for element in platforms_tree.getroot().iter():
         if control is not None:
             control.checkpoint()
@@ -212,11 +218,10 @@ def _collect_application_path_replacements(
 ) -> tuple[ET.ElementTree | None, bool]:
     if control is not None:
         control.checkpoint()
-    if not platform.database_xml.exists():
+    tree = load_platform_database_tree(platform, root, control=control)
+    if tree is None:
         result.warnings.append(f"Platform XML not found: {platform.database_xml}")
         return None, False
-
-    tree = parse_xml_tree(platform.database_xml, control=control)
     changed = False
     for element in tree.getroot().iter():
         if control is not None:
@@ -308,7 +313,7 @@ def _run_path_replacement(
     result_by_platform: dict[str, PathReplacementResult] = {}
     results: list[PathReplacementResult] = []
     planned_file_index = _PlannedFileIndex()
-    platforms_xml = platforms_metadata_path(root)
+    platforms_xml: Path | None = None
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_parent = root / "Data" / "Backups"
     backup_name = f"PathReplacement-{timestamp}"
@@ -317,7 +322,10 @@ def _run_path_replacement(
     backup_root = backup_parent / backup_name
 
     try:
-        platforms = load_platforms(root, control=control)
+        catalog = load_platform_catalog(root, control=control)
+        platforms_xml = catalog.metadata_path
+        platforms_tree = catalog.tree
+        platforms = list(catalog.platforms)
         if platform_filter:
             platforms = [
                 platform
@@ -331,19 +339,16 @@ def _run_path_replacement(
         results = list(result_by_platform.values())
 
         if apply_changes:
+            platforms_xml = platforms_metadata_path(root)
             xml_paths = [platforms_xml]
-            xml_paths.extend(
-                platform.database_xml
-                for platform in platforms
-                if platform.database_xml.exists()
-            )
+            xml_paths.extend(existing_platform_database_paths(root, platforms))
             ensure_safe_to_mutate(xml_paths)
 
         if control is not None:
             control.checkpoint()
-        platforms_tree = parse_xml_tree(platforms_xml, control=control)
         platforms_changed = _collect_platform_folder_replacements(
             platforms_tree,
+            platforms_xml,
             result_by_platform,
             root,
             old_path,
@@ -471,6 +476,9 @@ def _run_path_replacement(
                 files=planned_files,
             )
         return MutationRunResult(results, MutationOutcome.DRY_RUN, files=planned_files)
+
+    if platforms_xml is None:
+        raise RuntimeError("Platform catalog path was not initialized")
 
     backup_root = reserve_unique_backup_root(backup_parent, backup_name)
     mutations: list[XmlMutation] = []

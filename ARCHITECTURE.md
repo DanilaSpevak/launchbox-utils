@@ -146,6 +146,14 @@ invalid or trailing filename characters, DOS device names, and overlong componen
 are rejected. An unsafe entry aborts the complete audit, dry-run, or apply operation;
 it is never silently omitted from a report.
 
+The XML repository is the single trusted-read boundary. It loads `Platforms.xml`
+once into a catalog snapshot that contains the verified metadata path, parsed tree,
+and matching platform list. Platform database readers validate the destination before
+the existence probe, again immediately before parsing, and once more after parsing
+before returning the tree. `replace-paths` reuses the catalog tree instead of reading
+`Platforms.xml` a second time. Windows DOS device matching includes the ISO-8859-1
+superscript digits, so `COM¹` through `COM³` and `LPT¹` through `LPT³` are rejected.
+
 The selected LaunchBox root is resolved once and becomes the trust anchor. An alias
 or junction used to select that root is allowed, but every existing component below
 it through `Data`, `Data/Platforms`, and the database XML must not be a reparse point,
@@ -157,6 +165,9 @@ rechecks the boundary before backup, stage, each commit, and rollback. A failure
 before mutation creates no backup or manifest; a failure after preparation prevents
 new commits and is recorded as a failed transaction. This repeated validation narrows
 filesystem races but does not replace a future handle-relative WinAPI design.
+The same limitation remains for the final trusted-read check and the subsequent file
+open; the pre/post-read checks remove long orchestration gaps but cannot make that
+last pair of filesystem operations atomic.
 
 ### Mutation Safety Checks
 

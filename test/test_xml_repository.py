@@ -1,9 +1,12 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest.mock import patch
 from launchbox_tools.operation_lifecycle import OperationCancelled
 from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.xml_repository import (
     load_application_entries,
+    load_platform_catalog,
+    load_platform_database_tree,
     load_platforms,
     parse_xml,
     parse_xml_tree,
@@ -13,6 +16,73 @@ from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class XmlRepositoryTests(LaunchBoxTestCase):
+    def test_platform_catalog_guards_metadata_before_and_after_single_parse(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            events: list[str] = []
+
+            from launchbox_tools import xml_repository
+
+            real_guard = xml_repository.platforms_metadata_path
+            real_parse = xml_repository.parse_xml_tree
+
+            def guard(path: Path) -> Path:
+                events.append("guard")
+                return real_guard(path)
+
+            def parse(path: Path, *, control=None) -> ET.ElementTree:
+                events.append("parse")
+                return real_parse(path, control=control)
+
+            with patch.object(xml_repository, "platforms_metadata_path", side_effect=guard):
+                with patch.object(xml_repository, "parse_xml_tree", side_effect=parse):
+                    snapshot = load_platform_catalog(root)
+
+            self.assertEqual(events, ["guard", "parse", "guard"])
+            self.assertEqual(len(snapshot.platforms), 1)
+            self.assertEqual(snapshot.metadata_path, root / "Data" / "Platforms.xml")
+
+    def test_platform_database_tree_guards_immediately_around_parse(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            self.write_games_xml(root, [("Game", "Games/NES/game.zip")])
+            platform = load_platforms(root)[0]
+            events: list[str] = []
+
+            from launchbox_tools import xml_repository
+
+            real_guard = xml_repository.ensure_platform_database_path
+            real_parse = xml_repository.parse_xml_tree
+
+            def guard(*args, **kwargs) -> Path:
+                events.append("guard")
+                return real_guard(*args, **kwargs)
+
+            def parse(path: Path, *, control=None) -> ET.ElementTree:
+                events.append("parse")
+                return real_parse(path, control=control)
+
+            with patch.object(xml_repository, "ensure_platform_database_path", side_effect=guard):
+                with patch.object(xml_repository, "parse_xml_tree", side_effect=parse):
+                    tree = load_platform_database_tree(platform, root)
+
+            self.assertIsNotNone(tree)
+            self.assertEqual(events, ["guard", "guard", "parse", "guard"])
+
+    def test_platform_database_tree_returns_none_without_parsing_missing_file(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            platform = load_platforms(root)[0]
+
+            with patch("launchbox_tools.xml_repository.parse_xml_tree") as parse:
+                tree = load_platform_database_tree(platform, root)
+
+            self.assertIsNone(tree)
+            parse.assert_not_called()
+
     def test_load_platforms_rejects_unsafe_name_instead_of_skipping_it(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

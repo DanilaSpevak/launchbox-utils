@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 
 from .models import GameEntry, PlatformInfo
@@ -12,6 +13,13 @@ from .paths import (
     resolve_launchbox_path,
 )
 from .xml_checkpoint_io import XML_CHECKPOINT_INTERVAL, parse_xml_tree_with_checkpoints
+
+
+@dataclass(frozen=True)
+class PlatformCatalogSnapshot:
+    metadata_path: Path
+    tree: ET.ElementTree
+    platforms: tuple[PlatformInfo, ...]
 
 
 def _checkpoint_periodically(
@@ -52,13 +60,12 @@ def parse_xml_tree(
     return parse_xml_tree_with_checkpoints(path, control)
 
 
-def load_platforms(
+def _platforms_from_root(
     root: Path,
+    xml_root: ET.Element,
     *,
     control: OperationControl | None = None,
 ) -> list[PlatformInfo]:
-    platforms_xml = platforms_metadata_path(root)
-    xml_root = parse_xml(platforms_xml, control=control)
     platforms: list[PlatformInfo] = []
 
     for index, element in enumerate(xml_root.iter(), start=1):
@@ -84,6 +91,54 @@ def load_platforms(
     return platforms
 
 
+def load_platform_catalog(
+    root: Path,
+    *,
+    control: OperationControl | None = None,
+) -> PlatformCatalogSnapshot:
+    metadata_path = platforms_metadata_path(root)
+    tree = parse_xml_tree(metadata_path, control=control)
+    verified_path = platforms_metadata_path(root)
+    platforms = _platforms_from_root(root, tree.getroot(), control=control)
+    return PlatformCatalogSnapshot(verified_path, tree, tuple(platforms))
+
+
+def load_platforms(
+    root: Path,
+    *,
+    control: OperationControl | None = None,
+) -> list[PlatformInfo]:
+    return list(load_platform_catalog(root, control=control).platforms)
+
+
+def load_platform_database_tree(
+    platform: PlatformInfo,
+    root: Path,
+    *,
+    control: OperationControl | None = None,
+) -> ET.ElementTree | None:
+    database_xml = ensure_platform_database_path(root, platform.name, platform.database_xml)
+    if not database_xml.exists():
+        return None
+    database_xml = ensure_platform_database_path(root, platform.name, database_xml)
+    tree = parse_xml_tree(database_xml, control=control)
+    ensure_platform_database_path(root, platform.name, database_xml)
+    return tree
+
+
+def existing_platform_database_paths(
+    root: Path,
+    platforms: list[PlatformInfo] | tuple[PlatformInfo, ...],
+) -> list[Path]:
+    existing: list[Path] = []
+    for platform in platforms:
+        database_xml = ensure_platform_database_path(root, platform.name, platform.database_xml)
+        if not database_xml.exists():
+            continue
+        existing.append(ensure_platform_database_path(root, platform.name, database_xml))
+    return existing
+
+
 def load_application_entries(
     platform: PlatformInfo,
     root: Path,
@@ -95,12 +150,14 @@ def load_application_entries(
     if control is not None:
         control.checkpoint()
     warnings: list[str] = []
-    database_xml = ensure_platform_database_path(root, platform.name, platform.database_xml)
-    if not database_xml.exists():
-        return [], [f"Platform XML not found: {database_xml}"]
-
     if xml_root is None:
-        xml_root = parse_xml(database_xml, control=control)
+        tree = load_platform_database_tree(platform, root, control=control)
+        if tree is None:
+            database_xml = ensure_platform_database_path(root, platform.name, platform.database_xml)
+            return [], [f"Platform XML not found: {database_xml}"]
+        xml_root = tree.getroot()
+    else:
+        ensure_platform_database_path(root, platform.name, platform.database_xml)
 
     parent_by_child: dict[int, ET.Element] = {}
     if include_xml_links:
