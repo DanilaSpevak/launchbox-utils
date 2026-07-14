@@ -6,12 +6,32 @@ from unittest.mock import patch
 from launchbox_tools.cli import _resolve_command, build_arg_parser, main
 from launchbox_tools.config import AppConfig
 from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationRunResult, MutationState
+from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.runtime_checks import MutationBlockedError
 
 from test.support import LaunchBoxTestCase
 
 
 class CliTests(LaunchBoxTestCase):
+    def test_cli_reports_unsafe_database_path_without_traceback(self) -> None:
+        config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
+        error = UnsafeDatabasePathError(
+            "unsafe platform path",
+            reason="invalid_platform_name",
+            platform_name="CON",
+            detail="reserved by Windows",
+        )
+        stderr = io.StringIO()
+
+        with patch("launchbox_tools.cli.load_app_config", return_value=config):
+            with patch("launchbox_tools.cli.run_audit", side_effect=error):
+                with contextlib.redirect_stderr(stderr):
+                    exit_code = main(["audit"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("LaunchBox operation aborted: unsafe platform path", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_cli_reports_busy_mutation_lock_without_traceback(self) -> None:
         config = AppConfig(Path("C:/LaunchBox"), Path("C:/Reports"), Path("config.ini"))
         error = MutationBlockedError(

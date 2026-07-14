@@ -8,12 +8,82 @@ from launchbox_tools.config import load_configured_language, save_interface_lang
 from launchbox_tools.gui.translations import translate
 from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationRunResult, MutationState
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
+from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.runtime_checks import MutationBlockedError
 
 from test.support import LaunchBoxTestCase
 
 
 class GuiTests(LaunchBoxTestCase):
+    def test_gui_audit_worker_logs_unsafe_path_without_traceback(self) -> None:
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        app = LaunchBoxUtilsApp.__new__(LaunchBoxUtilsApp)
+        messages: list[str] = []
+        app.validate_paths = Mock(return_value=(Path("C:/LaunchBox"), Path("C:/Reports")))
+        app.audit_output_mode_var = Mock()
+        app.audit_output_mode_var.get.return_value = "all"
+        app.enqueue_log = messages.append
+        app.t = lambda key: translate("en", key)
+        app.start_worker = lambda _message, worker: worker(OperationControl())
+        error = UnsafeDatabasePathError(
+            "unsafe",
+            reason="reparse_point",
+            path=Path("C:/LaunchBox/Data"),
+        )
+
+        with patch("launchbox_tools.gui.app.run_audit", side_effect=error):
+            with patch("launchbox_tools.gui.app.write_reports") as write_reports:
+                app.run_audit_operation()
+
+        joined = "\n".join(messages)
+        self.assertIn("reparse point is not allowed", joined)
+        self.assertNotIn("Traceback", joined)
+        write_reports.assert_not_called()
+
+    def test_gui_blocks_unsafe_apply_before_confirmation_and_worker(self) -> None:
+        import tkinter as tk
+
+        from launchbox_tools.gui.app import LaunchBoxUtilsApp
+
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk is not available: {exc}")
+        app = None
+        try:
+            root.withdraw()
+            with tempfile.TemporaryDirectory() as temp_dir:
+                app = LaunchBoxUtilsApp(root, Path(temp_dir) / "launchbox_utils.ini")
+                app.language = "en"
+                root.update_idletasks()
+                app.validate_paths = Mock(
+                    return_value=(Path("C:/LaunchBox"), Path("C:/Reports"))
+                )
+                app.start_worker = Mock()
+                error = UnsafeDatabasePathError(
+                    "unsafe",
+                    reason="invalid_platform_name",
+                    platform_name="CON",
+                    detail="the name is reserved by Windows",
+                )
+
+                with patch("launchbox_tools.gui.app.load_platforms", side_effect=error):
+                    with patch("launchbox_tools.gui.app.messagebox.showerror") as showerror:
+                        with patch("launchbox_tools.gui.app.messagebox.askyesno") as askyesno:
+                            app.run_dedupe_operation(True)
+                            root.update_idletasks()
+
+                showerror.assert_called_once()
+                self.assertIn("Invalid platform name", showerror.call_args.args[1])
+                askyesno.assert_not_called()
+                app.start_worker.assert_not_called()
+        finally:
+            if app is not None:
+                app.destroy_root()
+            else:
+                root.destroy()
+
     def test_gui_worker_logs_busy_mutation_lock_without_traceback(self) -> None:
         from launchbox_tools.gui.app import LaunchBoxUtilsApp
 
@@ -66,6 +136,7 @@ class GuiTests(LaunchBoxTestCase):
         self.assertEqual(translate("ru", "outcome_cancelled"), "Отменено")
         self.assertEqual(translate("ru", "state_committed"), "Зафиксировано XML-файлов")
         self.assertIn("LaunchBox", translate("ru", "mutation_blocked_launchbox"))
+        self.assertIn("Небезопасный", translate("ru", "unsafe_database_title"))
         self.assertEqual(translate("missing", "audit_group"), "Audit")
 
     def test_gui_mutation_summary_logs_every_state_and_manifest_error(self) -> None:

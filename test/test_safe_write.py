@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 from launchbox_tools.models import MutationOutcome, MutationState
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
+from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.safe_write import (
     _MAX_XML_NAME_CHARACTERS,
     XmlMutation,
@@ -673,6 +674,72 @@ class SafeWriteTests(LaunchBoxTestCase):
             self.assertEqual(transaction.files[0].state, MutationState.PREPARED)
             self.assertEqual(child_text(parse_xml(destination), "Value"), "old")
             self.assertFalse(list(root.rglob("*.tmp")))
+
+    def test_xml_transaction_rechecks_trusted_path_immediately_before_commit(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "Data" / "Platforms" / "NES.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            original = destination.read_bytes()
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            guard_calls = 0
+
+            def fail_precommit(*_args, **_kwargs) -> None:
+                nonlocal guard_calls
+                guard_calls += 1
+                if guard_calls == 4:
+                    raise UnsafeDatabasePathError(
+                        "path changed after stage",
+                        reason="reparse_point",
+                        path=destination.parent,
+                    )
+
+            mutation = XmlMutation(
+                destination,
+                tree,
+                trusted_parent=root / "Data" / "Platforms",
+                trust_anchor=root,
+            )
+            with patch(
+                "launchbox_tools.safe_write.ensure_trusted_direct_child",
+                side_effect=fail_precommit,
+            ):
+                with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                    with patch("launchbox_tools.safe_write._commit_staged_file") as commit:
+                        transaction = execute_xml_transaction([mutation], root / "Backups")
+
+            self.assertEqual(guard_calls, 4)
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(transaction.files[0].state, MutationState.PREPARED)
+            self.assertIn("path changed after stage", transaction.error)
+            self.assertEqual(destination.read_bytes(), original)
+            commit.assert_not_called()
+            self.assertFalse(list(root.rglob("*.tmp")))
+
+    def test_xml_transaction_checks_trusted_path_before_each_commit(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "Data" / "Platforms" / "NES.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            mutation = XmlMutation(
+                destination,
+                tree,
+                trusted_parent=root / "Data" / "Platforms",
+                trust_anchor=root,
+            )
+
+            with patch(
+                "launchbox_tools.safe_write.ensure_trusted_direct_child"
+            ) as trusted_guard:
+                with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                    transaction = execute_xml_transaction([mutation], root / "Backups")
+
+            self.assertEqual(transaction.outcome, MutationOutcome.SUCCESS)
+            self.assertEqual(trusted_guard.call_count, 5)
+            self.assertEqual(child_text(parse_xml(destination), "Value"), "new")
 
     def test_xml_transaction_keeps_unattempted_files_prepared_after_late_commit_failure(self) -> None:
         with self.make_root() as temp_dir:

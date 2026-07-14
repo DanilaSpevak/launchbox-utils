@@ -5,7 +5,12 @@ from pathlib import Path
 
 from .models import GameEntry, PlatformInfo
 from .operation_lifecycle import OperationControl
-from .paths import platform_database_path, resolve_launchbox_path
+from .paths import (
+    ensure_platform_database_path,
+    platform_database_path,
+    platforms_metadata_path,
+    resolve_launchbox_path,
+)
 from .xml_checkpoint_io import XML_CHECKPOINT_INTERVAL, parse_xml_tree_with_checkpoints
 
 
@@ -52,7 +57,7 @@ def load_platforms(
     *,
     control: OperationControl | None = None,
 ) -> list[PlatformInfo]:
-    platforms_xml = root / "Data" / "Platforms.xml"
+    platforms_xml = platforms_metadata_path(root)
     xml_root = parse_xml(platforms_xml, control=control)
     platforms: list[PlatformInfo] = []
 
@@ -64,7 +69,7 @@ def load_platforms(
         name = child_text(element, "Name")
         raw_folder = child_text(element, "Folder")
         if not name:
-            continue
+            platform_database_path(root, name)
 
         folder = resolve_launchbox_path(root, raw_folder) if raw_folder else root
         platforms.append(
@@ -90,11 +95,12 @@ def load_application_entries(
     if control is not None:
         control.checkpoint()
     warnings: list[str] = []
-    if not platform.database_xml.exists():
-        return [], [f"Platform XML not found: {platform.database_xml}"]
+    database_xml = ensure_platform_database_path(root, platform.name, platform.database_xml)
+    if not database_xml.exists():
+        return [], [f"Platform XML not found: {database_xml}"]
 
     if xml_root is None:
-        xml_root = parse_xml(platform.database_xml, control=control)
+        xml_root = parse_xml(database_xml, control=control)
 
     parent_by_child: dict[int, ET.Element] = {}
     if include_xml_links:

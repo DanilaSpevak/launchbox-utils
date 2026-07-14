@@ -161,6 +161,12 @@ For each platform in `Data/Platforms.xml`, the utility:
 - compares paths with case-insensitive Windows path normalization;
 - collects warnings (empty ROM folder, missing folder, scan errors, entries without `ApplicationPath`, etc.).
 
+All operations treat platform database paths as a security boundary. A platform name
+must be one valid Windows filename component, and its XML must remain directly under
+`Data/Platforms`. Invalid names, traversal, absolute or UNC paths, DOS reserved names,
+and junctions, symbolic links, or other reparse points inside the `Data` chain abort
+the complete operation. A junction used only to select the LaunchBox root is allowed.
+
 Run with default settings:
 
 ```powershell
@@ -565,6 +571,13 @@ python launchbox_utils.py --config "D:\Configs\launchbox_utils.ini" gui
 - рекурсивно сканирует ROM-папку платформы (`Folder` в метаданных платформы);
 - сравнивает пути с учётом регистра и нормализации Windows-путей;
 - собирает предупреждения (пустая ROM-папка, отсутствующая папка, ошибки сканирования, записи без `ApplicationPath` и т. п.).
+
+Все операции считают пути платформенных баз границей безопасности. Имя платформы
+должно быть одним допустимым компонентом имени файла Windows, а XML должен оставаться
+непосредственно внутри `Data/Platforms`. Недопустимые имена, traversal, абсолютные и
+UNC-пути, зарезервированные DOS-имена, а также junction, символические ссылки и другие
+reparse points внутри цепочки `Data` прерывают всю операцию. Junction, через который
+выбран только корень LaunchBox, допускается.
 
 Запуск с настройками по умолчанию:
 

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from .models import MutationFileResult, MutationOutcome, MutationState, PlatformInfo
 from .operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
+from .paths import ensure_trusted_direct_child
 from .runtime_checks import ensure_safe_to_mutate
 from .xml_checkpoint_io import (
     IO_CHUNK_SIZE,
@@ -453,6 +454,22 @@ def write_xml_tree_safely(tree: ET.ElementTree, destination: Path) -> None:
 class XmlMutation:
     destination: Path
     tree: ET.ElementTree
+    trusted_parent: Path | None = None
+    trust_anchor: Path | None = None
+
+
+def _ensure_mutation_destination_trusted(
+    mutation: XmlMutation,
+    destination: Path,
+) -> None:
+    if (mutation.trusted_parent is None) != (mutation.trust_anchor is None):
+        raise ValueError("XmlMutation trusted_parent and trust_anchor must be provided together")
+    if mutation.trusted_parent is not None and mutation.trust_anchor is not None:
+        ensure_trusted_direct_child(
+            mutation.trust_anchor,
+            mutation.trusted_parent,
+            destination,
+        )
 
 
 @dataclass
@@ -496,6 +513,10 @@ def execute_xml_transaction(
     transaction_id = run_id or str(uuid4())
     files = [MutationFileResult(mutation.destination.absolute()) for mutation in mutations]
     files_by_path = {result.path: result for result in files}
+    mutations_by_path = {
+        file_result.path: mutation
+        for mutation, file_result in zip(mutations, files)
+    }
 
     try:
         if control is not None:
@@ -509,6 +530,7 @@ def execute_xml_transaction(
                 control.checkpoint()
             destination = file_result.path
             try:
+                _ensure_mutation_destination_trusted(mutation, destination)
                 canonical_destination = destination.resolve(strict=False)
                 if canonical_destination in seen:
                     raise ValueError(f"Duplicate XML transaction destination: {destination}")
@@ -533,9 +555,10 @@ def execute_xml_transaction(
         ensure_safe_to_mutate(destinations)
 
         try:
-            for destination in destinations:
+            for mutation, destination in zip(mutations, destinations):
                 if control is not None:
                     control.checkpoint()
+                _ensure_mutation_destination_trusted(mutation, destination)
                 source_sha256 = sha256_file(destination, control=control)
                 backups[destination] = backup_xml_file(
                     destination,
@@ -556,9 +579,10 @@ def execute_xml_transaction(
             return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
 
         try:
-            for destination, payload in serialized.items():
+            for mutation, (destination, payload) in zip(mutations, serialized.items()):
                 if control is not None:
                     control.checkpoint()
+                _ensure_mutation_destination_trusted(mutation, destination)
                 stage_path = destination.with_name(
                     f".{destination.name}.{transaction_id}.stage.tmp"
                 )
@@ -575,8 +599,11 @@ def execute_xml_transaction(
             return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
 
         try:
+            for mutation, destination in zip(mutations, destinations):
+                _ensure_mutation_destination_trusted(mutation, destination)
             ensure_safe_to_mutate(destinations)
         except Exception as exc:
+            files_by_path[destination].error = str(exc)
             return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
 
         if control is not None:
@@ -584,7 +611,8 @@ def execute_xml_transaction(
             control.begin_commit()
 
         try:
-            for destination in destinations:
+            for mutation, destination in zip(mutations, destinations):
+                _ensure_mutation_destination_trusted(mutation, destination)
                 _commit_staged_file(stage_paths[destination], destination)
                 committed.append(destination)
                 files_by_path[destination].state = MutationState.COMMITTED
@@ -601,6 +629,8 @@ def execute_xml_transaction(
                 )
                 rollback_paths.add(rollback_path)
                 try:
+                    mutation = mutations_by_path[destination]
+                    _ensure_mutation_destination_trusted(mutation, destination)
                     _restore_backup(backups[destination], destination, rollback_path)
                     files_by_path[destination].state = MutationState.ROLLED_BACK
                 except Exception as rollback_exc:

@@ -114,6 +114,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "Another LaunchBox Utils mutation is already running.\n"
             "Operation: {operation}\nRun ID: {run_id}\nPID: {pid}\nStarted: {started_at}"
         ),
+        "unsafe_database_title": "Unsafe database path",
+        "unsafe_database_invalid_name": "Invalid platform name {platform}. It must be one valid Windows filename component.",
+        "unsafe_database_outside": "Database XML is outside its trusted directory:\n{path}",
+        "unsafe_database_reparse": "A junction, symbolic link, or reparse point is not allowed:\n{path}",
+        "unsafe_database_metadata": "Database path safety could not be verified:\n{path}\n{detail}",
+        "unsafe_database_generic": "Unsafe database path:\n{path}\n{detail}",
         "dedupe_mode": "Dedupe mode",
         "path_replacement_mode": "Path replacement mode",
         "processed_platforms": "Processed platforms",
@@ -239,6 +245,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "Другая мутация LaunchBox Utils уже выполняется.\n"
             "Операция: {operation}\nRun ID: {run_id}\nPID: {pid}\nНачало: {started_at}"
         ),
+        "unsafe_database_title": "Небезопасный путь базы",
+        "unsafe_database_invalid_name": "Недопустимое имя платформы {platform}. Имя должно быть одним допустимым компонентом имени файла Windows.",
+        "unsafe_database_outside": "XML базы находится вне доверенного каталога:\n{path}",
+        "unsafe_database_reparse": "Junction, символическая ссылка или reparse point запрещены:\n{path}",
+        "unsafe_database_metadata": "Не удалось безопасно проверить путь базы:\n{path}\n{detail}",
+        "unsafe_database_generic": "Небезопасный путь базы:\n{path}\n{detail}",
         "dedupe_mode": "Режим дедупликации",
         "path_replacement_mode": "Режим замены путей",
         "processed_platforms": "Обработано платформ",

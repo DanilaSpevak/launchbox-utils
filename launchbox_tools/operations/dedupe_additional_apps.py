@@ -366,7 +366,14 @@ def dedupe_additional_apps_for_platform(
         return result, MutationOutcome.CANCELLED, [], [file_result]
 
     transaction = execute_xml_transaction(
-        [XmlMutation(platform.database_xml, tree)],
+        [
+            XmlMutation(
+                platform.database_xml,
+                tree,
+                trusted_parent=root / "Data" / "Platforms",
+                trust_anchor=root,
+            )
+        ],
         backup_root,
         run_id,
         control=control,

@@ -25,6 +25,7 @@ from ..operation_lifecycle import OperationCancelled, OperationControl, Operatio
 from ..operations.audit import run_audit
 from ..operations.dedupe_additional_apps import run_additional_apps_dedupe
 from ..operations.path_replacement import run_path_replacement
+from ..paths import UnsafeDatabasePathError, platforms_metadata_path
 from ..runtime_checks import MutationBlockedError, ensure_safe_to_mutate
 from ..xml_repository import load_platforms
 from ..reports.audit_reports import write_reports
@@ -843,6 +844,8 @@ class LaunchBoxUtilsApp:
                 self.enqueue_log(self.t("finished"))
             except OperationCancelled:
                 self.enqueue_log(self.t("outcome_cancelled"))
+            except UnsafeDatabasePathError as exc:
+                self.enqueue_log(f"{self.t('failed')}: {self.unsafe_database_path_message(exc)}")
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
 
@@ -870,6 +873,25 @@ class LaunchBoxUtilsApp:
 
     def show_mutation_blocked_error(self, exc: MutationBlockedError) -> None:
         messagebox.showerror(self.t("mutation_blocked_title"), self.mutation_blocked_message(exc))
+
+    def unsafe_database_path_message(self, exc: UnsafeDatabasePathError) -> str:
+        key = {
+            "invalid_platform_name": "unsafe_database_invalid_name",
+            "outside_trusted_directory": "unsafe_database_outside",
+            "reparse_point": "unsafe_database_reparse",
+            "path_metadata_error": "unsafe_database_metadata",
+        }.get(exc.reason, "unsafe_database_generic")
+        return self.t(key).format(
+            platform=repr(exc.platform_name) if exc.platform_name is not None else "?",
+            path=exc.path or "?",
+            detail=exc.detail or str(exc),
+        )
+
+    def show_unsafe_database_path_error(self, exc: UnsafeDatabasePathError) -> None:
+        messagebox.showerror(
+            self.t("unsafe_database_title"),
+            self.unsafe_database_path_message(exc),
+        )
 
     def log_mutation_state_summary(self, run_result: MutationRunResult[object]) -> None:
         for state in MutationState:
@@ -906,6 +928,9 @@ class LaunchBoxUtilsApp:
                 ensure_safe_to_mutate(xml_paths)
             except MutationBlockedError as exc:
                 self.show_mutation_blocked_error(exc)
+                return
+            except UnsafeDatabasePathError as exc:
+                self.show_unsafe_database_path_error(exc)
                 return
 
         if apply_changes and not messagebox.askyesno(self.t("confirm_apply_title"), self.t("confirm_apply_message")):
@@ -965,6 +990,8 @@ class LaunchBoxUtilsApp:
                 self.enqueue_log(self.t("outcome_cancelled"))
             except MutationBlockedError as exc:
                 self.enqueue_log(f"{self.t('failed')}: {self.mutation_blocked_message(exc)}")
+            except UnsafeDatabasePathError as exc:
+                self.enqueue_log(f"{self.t('failed')}: {self.unsafe_database_path_message(exc)}")
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
 
@@ -996,11 +1023,14 @@ class LaunchBoxUtilsApp:
         if apply_changes:
             try:
                 platforms = load_platforms(launchbox_root)
-                xml_paths = [launchbox_root / "Data" / "Platforms.xml"]
+                xml_paths = [platforms_metadata_path(launchbox_root)]
                 xml_paths.extend(platform.database_xml for platform in platforms if platform.database_xml.exists())
                 ensure_safe_to_mutate(xml_paths)
             except MutationBlockedError as exc:
                 self.show_mutation_blocked_error(exc)
+                return
+            except UnsafeDatabasePathError as exc:
+                self.show_unsafe_database_path_error(exc)
                 return
 
         if apply_changes and not messagebox.askyesno(self.t("confirm_apply_title"), self.t("confirm_apply_message")):
@@ -1061,6 +1091,8 @@ class LaunchBoxUtilsApp:
                 self.enqueue_log(self.t("outcome_cancelled"))
             except MutationBlockedError as exc:
                 self.enqueue_log(f"{self.t('failed')}: {self.mutation_blocked_message(exc)}")
+            except UnsafeDatabasePathError as exc:
+                self.enqueue_log(f"{self.t('failed')}: {self.unsafe_database_path_message(exc)}")
             except Exception:
                 self.enqueue_log(f"{self.t('failed')}:\n{traceback.format_exc()}")
 

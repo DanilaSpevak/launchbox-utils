@@ -1,6 +1,7 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from launchbox_tools.operation_lifecycle import OperationCancelled
+from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.xml_repository import (
     load_application_entries,
     load_platforms,
@@ -12,6 +13,37 @@ from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class XmlRepositoryTests(LaunchBoxTestCase):
+    def test_load_platforms_rejects_unsafe_name_instead_of_skipping_it(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Data" / "Platforms.xml").write_text(
+                "<ArrayOfPlatform><Platform><Name>..\\..\\sentinel</Name>"
+                "<Folder>Games</Folder></Platform></ArrayOfPlatform>",
+                encoding="utf-8",
+            )
+            sentinel = root / "sentinel.xml"
+            sentinel.write_text("<Outside />", encoding="utf-8")
+
+            with self.assertRaises(UnsafeDatabasePathError) as context:
+                load_platforms(root)
+
+            self.assertEqual(context.exception.reason, "invalid_platform_name")
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "<Outside />")
+
+    def test_load_platforms_rejects_missing_platform_name(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Data" / "Platforms.xml").write_text(
+                "<ArrayOfPlatform><Platform><Folder>Games</Folder>"
+                "</Platform></ArrayOfPlatform>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(UnsafeDatabasePathError) as context:
+                load_platforms(root)
+
+            self.assertEqual(context.exception.reason, "invalid_platform_name")
+
     def test_parse_xml_tree_checks_cancellation_during_large_parse(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

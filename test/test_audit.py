@@ -1,13 +1,26 @@
 from pathlib import Path
 from unittest.mock import patch
-from launchbox_tools.operations.audit import audit_platform
+from launchbox_tools.operations.audit import audit_platform, run_audit
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl
+from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.xml_repository import load_platforms
 
 from test.support import LaunchBoxTestCase
 
 
 class AuditTests(LaunchBoxTestCase):
+    def test_audit_fails_closed_for_unsafe_platform_name(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Data" / "Platforms.xml").write_text(
+                "<ArrayOfPlatform><Platform><Name>..\\Outside</Name>"
+                "<Folder>Games</Folder></Platform></ArrayOfPlatform>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(UnsafeDatabasePathError):
+                run_audit(root)
+
     def test_audit_checks_cancellation_between_exists_probes(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

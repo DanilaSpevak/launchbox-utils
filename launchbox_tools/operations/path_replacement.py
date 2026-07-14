@@ -18,7 +18,7 @@ from ..models import (
 from ..mutation_lock import mutation_run_lock
 from ..mutation_manifest import write_mutation_manifest
 from ..operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
-from ..paths import path_key, resolve_launchbox_path
+from ..paths import path_key, platforms_metadata_path, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import XmlMutation, execute_xml_transaction, reserve_unique_backup_root
 from ..xml_repository import child_text, load_platforms, local_name, parse_xml_tree
@@ -161,7 +161,7 @@ def _collect_platform_folder_replacements(
     control: OperationControl | None = None,
 ) -> bool:
     changed = False
-    platforms_xml = root / "Data" / "Platforms.xml"
+    platforms_xml = platforms_metadata_path(root)
     for element in platforms_tree.getroot().iter():
         if control is not None:
             control.checkpoint()
@@ -308,7 +308,7 @@ def _run_path_replacement(
     result_by_platform: dict[str, PathReplacementResult] = {}
     results: list[PathReplacementResult] = []
     planned_file_index = _PlannedFileIndex()
-    platforms_xml = root / "Data" / "Platforms.xml"
+    platforms_xml = platforms_metadata_path(root)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_parent = root / "Data" / "Backups"
     backup_name = f"PathReplacement-{timestamp}"
@@ -475,9 +475,21 @@ def _run_path_replacement(
     backup_root = reserve_unique_backup_root(backup_parent, backup_name)
     mutations: list[XmlMutation] = []
     if platforms_changed:
-        mutations.append(XmlMutation(platforms_xml, platforms_tree))
+        mutations.append(
+            XmlMutation(
+                platforms_xml,
+                platforms_tree,
+                trusted_parent=root / "Data",
+                trust_anchor=root,
+            )
+        )
     mutations.extend(
-        XmlMutation(result.platform.database_xml, tree)
+        XmlMutation(
+            result.platform.database_xml,
+            tree,
+            trusted_parent=root / "Data" / "Platforms",
+            trust_anchor=root,
+        )
         for result, tree, changed in platform_trees
         if changed
     )

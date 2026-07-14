@@ -15,6 +15,7 @@ from launchbox_tools.operations.dedupe_additional_apps import (
 from launchbox_tools.runtime_checks import MutationBlockedError
 from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationState
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl
+from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.reports.dedupe_reports import write_dedupe_reports
 from launchbox_tools.safe_write import XmlTransactionResult
 from launchbox_tools.xml_repository import (
@@ -29,6 +30,32 @@ from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class DedupeAdditionalAppsTests(LaunchBoxTestCase):
+    def test_dedupe_dry_run_fails_closed_for_unsafe_platform(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Data" / "Platforms.xml").write_text(
+                "<ArrayOfPlatform><Platform><Name>CON</Name><Folder>Games</Folder>"
+                "</Platform></ArrayOfPlatform>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(UnsafeDatabasePathError):
+                run_additional_apps_dedupe(root, apply_changes=False)
+
+    def test_dedupe_apply_rejects_unsafe_platform_before_backup(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Data" / "Platforms.xml").write_text(
+                "<ArrayOfPlatform><Platform><Name>CON</Name><Folder>Games</Folder>"
+                "</Platform></ArrayOfPlatform>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(UnsafeDatabasePathError):
+                run_additional_apps_dedupe(root, apply_changes=True)
+
+            self.assertFalse((root / "Data" / "Backups").exists())
+
     def test_find_duplicates_checks_cancellation_inside_one_large_element(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

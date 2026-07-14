@@ -137,6 +137,27 @@ Path replacement maintains canonical file states incrementally during scan and b
 
 Use `safe_write.py` for backup and safe replacement rather than writing XML directly.
 
+### Trusted Database Paths
+
+Every operation fails closed before reading a platform database unless the platform
+name is one valid Windows filename component and its canonical database path is an
+immediate child of `Data/Platforms`. Empty names, traversal, absolute and UNC paths,
+invalid or trailing filename characters, DOS device names, and overlong components
+are rejected. An unsafe entry aborts the complete audit, dry-run, or apply operation;
+it is never silently omitted from a report.
+
+The selected LaunchBox root is resolved once and becomes the trust anchor. An alias
+or junction used to select that root is allowed, but every existing component below
+it through `Data`, `Data/Platforms`, and the database XML must not be a reparse point,
+junction, or symbolic link. `Data/Platforms.xml` is subject to the same rule as a
+direct child of `Data`.
+
+`XmlMutation` carries its trust anchor and expected parent. The transaction executor
+rechecks the boundary before backup, stage, each commit, and rollback. A failure
+before mutation creates no backup or manifest; a failure after preparation prevents
+new commits and is recorded as a failed transaction. This repeated validation narrows
+filesystem races but does not replace a future handle-relative WinAPI design.
+
 ### Mutation Safety Checks
 
 `runtime_checks.py` enforces the rule that LaunchBox must not be running and database XML must not be locked before apply.

@@ -17,12 +17,32 @@ from launchbox_tools.models import (
     PlatformInfo,
 )
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl
+from launchbox_tools.paths import UnsafeDatabasePathError
 from launchbox_tools.xml_repository import child_text, local_name, parse_xml
 
 from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
 
 
 class PathReplacementTests(LaunchBoxTestCase):
+    def test_path_replacement_apply_rejects_unsafe_platform_before_backup(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Data" / "Platforms.xml").write_text(
+                "<ArrayOfPlatform><Platform><Name>..\\Unsafe</Name>"
+                "<Folder>Games/Old</Folder></Platform></ArrayOfPlatform>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(UnsafeDatabasePathError):
+                run_path_replacement(
+                    root,
+                    root / "Games" / "Old",
+                    root / "Games" / "New",
+                    apply_changes=True,
+                )
+
+            self.assertFalse((root / "Data" / "Backups").exists())
+
     def test_planned_file_index_propagates_late_file_error(self) -> None:
         platform = PlatformInfo("Platform", Path("Games"), Path("Platform.xml"))
         first = PathReplacement(
