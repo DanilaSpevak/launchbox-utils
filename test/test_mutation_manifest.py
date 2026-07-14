@@ -1,10 +1,17 @@
+import sys
+import unittest
 from pathlib import Path
 from unittest.mock import patch
+import launchbox_tools.mutation_manifest as mutation_manifest
 from launchbox_tools.operations.path_replacement import run_path_replacement
 from launchbox_tools.models import MutationFileResult, MutationOutcome, MutationRunResult, MutationState
 from launchbox_tools.mutation_manifest import write_mutation_manifest
 
-from test.support import LaunchBoxTestCase
+from test.support import (
+    LaunchBoxTestCase,
+    create_directory_junction,
+    remove_directory_junction,
+)
 
 
 class MutationManifestTests(LaunchBoxTestCase):
@@ -16,7 +23,7 @@ class MutationManifestTests(LaunchBoxTestCase):
 
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
                 with patch(
-                    "launchbox_tools.mutation_manifest.Path.write_text",
+                    "launchbox_tools.mutation_manifest._write_manifest_temp",
                     side_effect=OSError("manifest denied"),
                 ):
                     run_result = run_path_replacement(
@@ -38,7 +45,7 @@ class MutationManifestTests(LaunchBoxTestCase):
 
         with patch("launchbox_tools.mutation_manifest.Path.mkdir"):
             with patch(
-                "launchbox_tools.mutation_manifest.Path.write_text",
+                "launchbox_tools.mutation_manifest._write_manifest_temp",
                 side_effect=OSError(),
             ):
                 with patch("launchbox_tools.mutation_manifest.Path.unlink"):
@@ -73,3 +80,56 @@ class MutationManifestTests(LaunchBoxTestCase):
             self.assertIsNone(run_result.manifest_path)
             self.assertEqual(manifest_path.read_text(encoding="utf-8"), "previous manifest\n")
             self.assertFalse(list(backup_root.glob("*.tmp")))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
+    def test_manifest_cleanup_never_follows_swapped_backup_root_junction(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            backup_root = root / "Data" / "Backups" / "run"
+            backup_root.mkdir(parents=True)
+            saved_root = backup_root.with_name("run-saved")
+            external_root = root / "ExternalManifest"
+            external_root.mkdir()
+            run_result = MutationRunResult([], MutationOutcome.SUCCESS, run_id="test-run")
+            real_write = mutation_manifest._write_manifest_temp
+            temp_path: Path | None = None
+            external_temp: Path | None = None
+            swapped = False
+
+            def write_then_swap(path: Path, serialized: str) -> None:
+                nonlocal temp_path, external_temp, swapped
+                real_write(path, serialized)
+                temp_path = path
+                backup_root.rename(saved_root)
+                create_directory_junction(backup_root, external_root)
+                external_temp = external_root / path.name
+                external_temp.write_text("external-manifest-sentinel", encoding="utf-8")
+                swapped = True
+
+            try:
+                with patch.object(
+                    mutation_manifest,
+                    "_write_manifest_temp",
+                    side_effect=write_then_swap,
+                ):
+                    write_mutation_manifest(
+                        run_result,
+                        backup_root,
+                        "test_operation",
+                        [],
+                        trust_anchor=root,
+                    )
+
+                self.assertIsNotNone(run_result.manifest_error)
+                self.assertIsNone(run_result.manifest_path)
+                self.assertIsNotNone(external_temp)
+                self.assertEqual(
+                    external_temp.read_text(encoding="utf-8"),
+                    "external-manifest-sentinel",
+                )
+            finally:
+                if swapped:
+                    remove_directory_junction(backup_root)
+                    saved_root.rename(backup_root)
+                if temp_path is not None and temp_path.exists():
+                    temp_path.unlink()

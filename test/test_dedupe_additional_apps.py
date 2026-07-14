@@ -154,9 +154,15 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             summary = (report_root / "duplicate_additional_apps.csv").read_text(
                 encoding="utf-8-sig"
             )
-            self.assertIn("partial", summary)
-            self.assertIn(str(results.manifest_path), summary)
-            self.assertIn("reparse", summary.lower())
+            rows = list(csv.DictReader(summary.splitlines()[1:], delimiter=";"))
+            rows_by_platform = {row["platform"]: row for row in rows}
+            committed_row = rows_by_platform["Nintendo Entertainment System"]
+            failed_row = rows_by_platform["Sega Genesis"]
+            self.assertEqual(committed_row["outcome"], "partial")
+            self.assertEqual(committed_row["state"], "committed")
+            self.assertEqual(failed_row["state"], "failed")
+            self.assertEqual(failed_row["manifest_path"], str(results.manifest_path))
+            self.assertIn("reparse", failed_row["error"].lower())
             restored_root = parse_xml(
                 root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
             )
@@ -179,6 +185,11 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                 "Sega Genesis",
                 root / "Games" / "Genesis",
                 root / "Data" / "Platforms" / "Sega Genesis.xml",
+            )
+            third = PlatformInfo(
+                "Sony PlayStation",
+                root / "Games" / "PlayStation",
+                root / "Data" / "Platforms" / "Sony PlayStation.xml",
             )
             unsafe_error = UnsafeDatabasePathError(
                 "late unsafe path",
@@ -218,9 +229,14 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                             error=error,
                         )
                     ],
+                    None,
                 )
 
-            with patch.object(dedupe_operation, "load_platforms", return_value=[first, second]):
+            with patch.object(
+                dedupe_operation,
+                "load_platforms",
+                return_value=[first, second, third],
+            ):
                 with patch.object(dedupe_operation, "existing_platform_database_paths", return_value=[]):
                     with patch.object(dedupe_operation, "ensure_safe_to_mutate"):
                         with patch.object(
@@ -231,6 +247,8 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                             results = run_additional_apps_dedupe(root, apply_changes=True)
 
             self.assertEqual(results.outcome, MutationOutcome.FAILED)
+            self.assertEqual(call_count, 2)
+            self.assertEqual([item.platform.name for item in results.results], [first.name, second.name])
             self.assertEqual([item.state for item in results.files], [MutationState.FAILED] * 2)
             self.assertIn("late unsafe path", results.error)
             self.assertIsNotNone(results.manifest_path)
@@ -240,6 +258,78 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                 [file_result["state"] for file_result in manifest["files"]],
                 ["failed", "failed"],
             )
+            self.assertIn("late unsafe path", manifest["error"])
+            self.assertEqual(manifest["files"][1]["error"], "late unsafe path")
+            self.assertEqual(
+                Path(manifest["files"][1]["path"]),
+                second.database_xml,
+            )
+
+    def test_dedupe_transaction_trust_failure_stops_before_third_platform_commit(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            platform_names = ["Alpha", "Beta", "Gamma"]
+            platforms_xml = "".join(
+                f"<Platform><Name>{name}</Name><Folder>Games/{name}</Folder></Platform>"
+                for name in platform_names
+            )
+            (root / "Data" / "Platforms.xml").write_text(
+                f"<ArrayOfPlatform>{platforms_xml}</ArrayOfPlatform>",
+                encoding="utf-8",
+            )
+            duplicate_xml = self.duplicate_additional_app_xml(
+                "game-1",
+                "duplicate",
+                "duplicate",
+                "Games/a.exe",
+            )
+            for name in platform_names:
+                self.write_platform_games_xml_raw(root, name, duplicate_xml)
+
+            def fail_beta_commit(stage_path: Path, destination: Path) -> None:
+                if destination.name == "Beta.xml":
+                    raise UnsafeDatabasePathError(
+                        "Beta path changed before commit",
+                        reason="reparse_point",
+                        path=destination,
+                        platform_name="Beta",
+                    )
+                stage_path.replace(destination)
+
+            with patch(
+                "launchbox_tools.runtime_checks.is_launchbox_process_running",
+                return_value=False,
+            ):
+                with patch(
+                    "launchbox_tools.safe_write._commit_staged_file",
+                    side_effect=fail_beta_commit,
+                ):
+                    result = run_additional_apps_dedupe(root, apply_changes=True)
+
+            self.assertEqual(result.outcome, MutationOutcome.PARTIAL)
+            self.assertEqual(
+                [item.platform.name for item in result.results],
+                ["Alpha", "Beta"],
+            )
+            self.assertEqual(
+                [item.state for item in result.files],
+                [MutationState.COMMITTED, MutationState.FAILED],
+            )
+            self.assertIn("Beta path changed before commit", result.error)
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["outcome"], "partial")
+            self.assertEqual(
+                [Path(item["path"]).name for item in manifest["files"]],
+                ["Alpha.xml", "Beta.xml"],
+            )
+            gamma_root = parse_xml(root / "Data" / "Platforms" / "Gamma.xml")
+            gamma_entries = [
+                element
+                for element in gamma_root.iter()
+                if local_name(element.tag) == "AdditionalApplication"
+            ]
+            self.assertEqual(len(gamma_entries), 2)
+            self.assertFalse((root / ".launchbox-utils-work").exists())
 
     def test_dedupe_dry_run_fails_closed_for_unsafe_platform(self) -> None:
         with self.make_root() as temp_dir:

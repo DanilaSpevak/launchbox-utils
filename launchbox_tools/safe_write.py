@@ -7,11 +7,12 @@ import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from .models import MutationFileResult, MutationOutcome, MutationState, PlatformInfo
 from .operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
-from .paths import ensure_trusted_direct_child
+from .paths import UnsafeDatabasePathError, ensure_trusted_direct_child
 from .runtime_checks import ensure_safe_to_mutate
 from .xml_checkpoint_io import (
     IO_CHUNK_SIZE,
@@ -24,6 +25,7 @@ _IO_CHUNK_SIZE = IO_CHUNK_SIZE
 _XML_CHECKPOINT_INTERVAL = XML_CHECKPOINT_INTERVAL
 _TEXT_CHUNK_CHARACTERS = 128 * 1024
 _MAX_XML_NAME_CHARACTERS = _TEXT_CHUNK_CHARACTERS
+_TRANSACTION_WORKSPACE_NAME = ".launchbox-utils-work"
 
 
 class _CheckpointingUtf8Writer:
@@ -325,10 +327,11 @@ def _write_bytes_with_checkpoints(
     payload: bytes,
     *,
     control: OperationControl | None = None,
+    exclusive: bool = False,
 ) -> None:
     if control is not None:
         control.checkpoint()
-    with path.open("wb") as file:
+    with path.open("xb" if exclusive else "wb") as file:
         for offset in range(0, len(payload), _IO_CHUNK_SIZE):
             if control is not None:
                 control.checkpoint()
@@ -376,26 +379,63 @@ def backup_xml_file(
     backup_root: Path,
     *,
     control: OperationControl | None = None,
+    trusted_parent: Path | None = None,
+    trust_anchor: Path | None = None,
+    backup_trust_anchor: Path | None = None,
 ) -> Path:
     if control is not None:
         control.checkpoint()
+    _ensure_trusted_path(trust_anchor, trusted_parent, xml_path)
     ensure_safe_to_mutate([xml_path])
-    backup_root.mkdir(parents=True, exist_ok=True)
+    if backup_trust_anchor is not None:
+        ensure_trusted_direct_child(
+            backup_trust_anchor,
+            backup_root.parent,
+            backup_root,
+        )
+        backup_root.mkdir(parents=True, exist_ok=True)
+        ensure_trusted_direct_child(
+            backup_trust_anchor,
+            backup_root.parent,
+            backup_root,
+        )
+    else:
+        backup_root.mkdir(parents=True, exist_ok=True)
     backup_path = backup_root / xml_path.name
     created = False
     try:
+        _ensure_trusted_path(trust_anchor, trusted_parent, xml_path)
+        if backup_trust_anchor is not None:
+            ensure_trusted_direct_child(
+                backup_trust_anchor,
+                backup_root,
+                backup_path,
+            )
         with xml_path.open("rb") as source, backup_path.open("xb") as destination:
             created = True
             while chunk := source.read(_IO_CHUNK_SIZE):
                 if control is not None:
                     control.checkpoint()
                 destination.write(chunk)
+        _ensure_trusted_path(trust_anchor, trusted_parent, xml_path)
+        if backup_trust_anchor is not None:
+            ensure_trusted_direct_child(
+                backup_trust_anchor,
+                backup_root,
+                backup_path,
+            )
         shutil.copystat(xml_path, backup_path)
     except Exception:
         if created:
             try:
+                if backup_trust_anchor is not None:
+                    ensure_trusted_direct_child(
+                        backup_trust_anchor,
+                        backup_root,
+                        backup_path,
+                    )
                 backup_path.unlink(missing_ok=True)
-            except OSError:
+            except (OSError, RuntimeError, ValueError):
                 pass
         raise
     return backup_path
@@ -410,14 +450,47 @@ def backup_platform_xml(
     return backup_xml_file(platform.database_xml, backup_root, control=control)
 
 
-def reserve_unique_backup_root(backup_parent: Path, name: str) -> Path:
+def reserve_unique_backup_root(
+    backup_parent: Path,
+    name: str,
+    *,
+    trusted_parent: Path | None = None,
+    trust_anchor: Path | None = None,
+) -> Path:
+    _ensure_trusted_path(trust_anchor, trusted_parent, backup_parent)
     if backup_parent.exists() and not backup_parent.is_dir():
         raise NotADirectoryError(f"Backup parent is not a directory: {backup_parent}")
     backup_parent.mkdir(parents=True, exist_ok=True)
+    _ensure_trusted_path(trust_anchor, trusted_parent, backup_parent)
 
     candidate = backup_parent / name
-    candidate.mkdir(exist_ok=False)
-    return candidate
+    created = False
+    try:
+        _ensure_trusted_path(
+            trust_anchor,
+            backup_parent if trust_anchor is not None else None,
+            candidate,
+        )
+        candidate.mkdir(exist_ok=False)
+        created = True
+        _ensure_trusted_path(
+            trust_anchor,
+            backup_parent if trust_anchor is not None else None,
+            candidate,
+        )
+        return candidate
+    except Exception:
+        if created:
+            try:
+                _ensure_trusted_path(
+                    trust_anchor,
+                    backup_parent if trust_anchor is not None else None,
+                    candidate,
+                )
+                candidate.rmdir()
+            except (OSError, RuntimeError, ValueError):
+                pass
+        raise
 
 
 def sha256_file(
@@ -458,18 +531,108 @@ class XmlMutation:
     trust_anchor: Path | None = None
 
 
+def _ensure_trusted_path(
+    trust_anchor: Path | None,
+    trusted_parent: Path | None,
+    path: Path,
+) -> None:
+    if (trusted_parent is None) != (trust_anchor is None):
+        raise ValueError("trusted_parent and trust_anchor must be provided together")
+    if trusted_parent is not None and trust_anchor is not None:
+        ensure_trusted_direct_child(trust_anchor, trusted_parent, path)
+
+
 def _ensure_mutation_destination_trusted(
     mutation: XmlMutation,
     destination: Path,
 ) -> None:
-    if (mutation.trusted_parent is None) != (mutation.trust_anchor is None):
-        raise ValueError("XmlMutation trusted_parent and trust_anchor must be provided together")
-    if mutation.trusted_parent is not None and mutation.trust_anchor is not None:
-        ensure_trusted_direct_child(
-            mutation.trust_anchor,
-            mutation.trusted_parent,
-            destination,
+    _ensure_trusted_path(
+        mutation.trust_anchor,
+        mutation.trusted_parent,
+        destination,
+    )
+
+
+def _trusted_transaction_anchor(mutations: list[XmlMutation]) -> Path | None:
+    anchors: list[Path] = []
+    for mutation in mutations:
+        if (mutation.trusted_parent is None) != (mutation.trust_anchor is None):
+            raise ValueError("XmlMutation trusted_parent and trust_anchor must be provided together")
+        if mutation.trust_anchor is not None:
+            anchors.append(mutation.trust_anchor.resolve(strict=False))
+
+    if not anchors:
+        return None
+    if len(anchors) != len(mutations):
+        raise ValueError("Trusted and untrusted XmlMutation entries cannot share a transaction")
+    anchor = anchors[0]
+    if any(candidate != anchor for candidate in anchors[1:]):
+        raise ValueError("All trusted XmlMutation entries must share one trust anchor")
+    return anchor
+
+
+def _reserve_transaction_workspace(anchor: Path) -> tuple[Path, Path]:
+    workspace_parent = anchor / _TRANSACTION_WORKSPACE_NAME
+    workspace_root = workspace_parent / str(uuid4())
+    try:
+        ensure_trusted_direct_child(anchor, anchor, workspace_parent)
+        workspace_parent.mkdir(exist_ok=True)
+        ensure_trusted_direct_child(anchor, anchor, workspace_parent)
+        ensure_trusted_direct_child(anchor, workspace_parent, workspace_root)
+        workspace_root.mkdir(exist_ok=False)
+        ensure_trusted_direct_child(anchor, workspace_parent, workspace_root)
+        return workspace_parent, workspace_root
+    except Exception:
+        _cleanup_transaction_workspace(
+            anchor,
+            workspace_parent,
+            workspace_root,
+            (),
         )
+        raise
+
+
+def _cleanup_transaction_workspace(
+    anchor: Path,
+    workspace_parent: Path,
+    workspace_root: Path,
+    paths: tuple[Path, ...] | list[Path],
+) -> None:
+    for path in paths:
+        try:
+            ensure_trusted_direct_child(anchor, workspace_root, path)
+            path.unlink(missing_ok=True)
+        except (OSError, RuntimeError, ValueError):
+            pass
+    try:
+        ensure_trusted_direct_child(anchor, workspace_parent, workspace_root)
+        workspace_root.rmdir()
+    except (OSError, RuntimeError, ValueError):
+        pass
+    try:
+        ensure_trusted_direct_child(anchor, anchor, workspace_parent)
+        workspace_parent.rmdir()
+    except (OSError, RuntimeError, ValueError):
+        pass
+
+
+def _workspace_path(
+    anchor: Path | None,
+    workspace_root: Path | None,
+    destination: Path,
+    transaction_id: str,
+    index: int,
+    kind: str,
+) -> Path:
+    if anchor is None or workspace_root is None:
+        return destination.with_name(f".{destination.name}.{transaction_id}.{kind}.tmp")
+    path = workspace_root / f"{index:04d}.{kind}.xml"
+    ensure_trusted_direct_child(anchor, workspace_root, path)
+    return path
+
+
+def _unsafe_path_error(exc: Exception) -> UnsafeDatabasePathError | None:
+    return exc if isinstance(exc, UnsafeDatabasePathError) else None
 
 
 @dataclass
@@ -479,15 +642,30 @@ class XmlTransactionResult:
     error: str | None = None
     rollback_errors: list[str] = field(default_factory=list)
     files: list[MutationFileResult] = field(default_factory=list)
+    unsafe_path_error: UnsafeDatabasePathError | None = None
 
 
 def _commit_staged_file(stage_path: Path, destination: Path) -> None:
     os.replace(stage_path, destination)
 
 
-def _restore_backup(backup_path: Path, destination: Path, rollback_path: Path) -> None:
-    shutil.copy2(backup_path, rollback_path)
+def _restore_backup(
+    backup_path: Path,
+    destination: Path,
+    rollback_path: Path,
+    *,
+    before_copy: Callable[[], None] | None = None,
+    before_replace: Callable[[], None] | None = None,
+) -> None:
+    if before_copy is not None:
+        before_copy()
+    with backup_path.open("rb") as source, rollback_path.open("xb") as target:
+        while chunk := source.read(_IO_CHUNK_SIZE):
+            target.write(chunk)
+    shutil.copystat(backup_path, rollback_path)
     ET.parse(rollback_path)
+    if before_replace is not None:
+        before_replace()
     os.replace(rollback_path, destination)
 
 
@@ -510,6 +688,9 @@ def execute_xml_transaction(
     stage_paths: dict[Path, Path] = {}
     rollback_paths: set[Path] = set()
     committed: list[Path] = []
+    workspace_parent: Path | None = None
+    workspace_root: Path | None = None
+    transaction_anchor: Path | None = None
     transaction_id = run_id or str(uuid4())
     files = [MutationFileResult(mutation.destination.absolute()) for mutation in mutations]
     files_by_path = {result.path: result for result in files}
@@ -517,11 +698,16 @@ def execute_xml_transaction(
         file_result.path: mutation
         for mutation, file_result in zip(mutations, files)
     }
+    destination_indexes = {
+        file_result.path: index
+        for index, file_result in enumerate(files, start=1)
+    }
 
     try:
         if control is not None:
             control.set_phase(OperationPhase.STAGE)
             control.checkpoint()
+        transaction_anchor = _trusted_transaction_anchor(mutations)
 
         serialized: dict[Path, bytes] = {}
         seen: set[Path] = set()
@@ -545,7 +731,13 @@ def execute_xml_transaction(
             except Exception as exc:
                 file_result.state = MutationState.FAILED
                 file_result.error = str(exc)
-                return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
+                return XmlTransactionResult(
+                    MutationOutcome.FAILED,
+                    backups,
+                    str(exc),
+                    files=files,
+                    unsafe_path_error=_unsafe_path_error(exc),
+                )
 
         destinations = list(serialized)
         backup_roots = {
@@ -560,13 +752,29 @@ def execute_xml_transaction(
                     control.checkpoint()
                 _ensure_mutation_destination_trusted(mutation, destination)
                 source_sha256 = sha256_file(destination, control=control)
+                _ensure_mutation_destination_trusted(mutation, destination)
                 backups[destination] = backup_xml_file(
                     destination,
                     backup_roots[destination],
                     control=control,
+                    trusted_parent=mutation.trusted_parent,
+                    trust_anchor=mutation.trust_anchor,
+                    backup_trust_anchor=transaction_anchor,
                 )
                 files_by_path[destination].backup_path = backups[destination]
+                if transaction_anchor is not None:
+                    ensure_trusted_direct_child(
+                        transaction_anchor,
+                        backup_roots[destination],
+                        backups[destination],
+                    )
                 backup_sha256 = sha256_file(backups[destination], control=control)
+                if transaction_anchor is not None:
+                    ensure_trusted_direct_child(
+                        transaction_anchor,
+                        backup_roots[destination],
+                        backups[destination],
+                    )
                 if backup_sha256 != source_sha256:
                     raise OSError(f"Backup verification failed for {destination}")
                 files_by_path[destination].source_sha256 = source_sha256
@@ -576,18 +784,38 @@ def execute_xml_transaction(
             file_result = files_by_path[destination]
             file_result.state = MutationState.FAILED
             file_result.error = str(exc)
-            return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
+            return XmlTransactionResult(
+                MutationOutcome.FAILED,
+                backups,
+                str(exc),
+                files=files,
+                unsafe_path_error=_unsafe_path_error(exc),
+            )
 
         try:
+            if transaction_anchor is not None:
+                workspace_parent, workspace_root = _reserve_transaction_workspace(
+                    transaction_anchor
+                )
             for mutation, (destination, payload) in zip(mutations, serialized.items()):
                 if control is not None:
                     control.checkpoint()
                 _ensure_mutation_destination_trusted(mutation, destination)
-                stage_path = destination.with_name(
-                    f".{destination.name}.{transaction_id}.stage.tmp"
+                stage_path = _workspace_path(
+                    transaction_anchor,
+                    workspace_root,
+                    destination,
+                    transaction_id,
+                    destination_indexes[destination],
+                    "stage",
                 )
                 stage_paths[destination] = stage_path
-                _write_bytes_with_checkpoints(stage_path, payload, control=control)
+                _write_bytes_with_checkpoints(
+                    stage_path,
+                    payload,
+                    control=control,
+                    exclusive=True,
+                )
                 _validate_xml_file(stage_path, control=control)
                 files_by_path[destination].state = MutationState.PREPARED
         except OperationCancelled:
@@ -596,7 +824,13 @@ def execute_xml_transaction(
             file_result = files_by_path[destination]
             file_result.state = MutationState.FAILED
             file_result.error = str(exc)
-            return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
+            return XmlTransactionResult(
+                MutationOutcome.FAILED,
+                backups,
+                str(exc),
+                files=files,
+                unsafe_path_error=_unsafe_path_error(exc),
+            )
 
         try:
             for mutation, destination in zip(mutations, destinations):
@@ -604,7 +838,13 @@ def execute_xml_transaction(
             ensure_safe_to_mutate(destinations)
         except Exception as exc:
             files_by_path[destination].error = str(exc)
-            return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
+            return XmlTransactionResult(
+                MutationOutcome.FAILED,
+                backups,
+                str(exc),
+                files=files,
+                unsafe_path_error=_unsafe_path_error(exc),
+            )
 
         if control is not None:
             control.checkpoint()
@@ -613,6 +853,12 @@ def execute_xml_transaction(
         try:
             for mutation, destination in zip(mutations, destinations):
                 _ensure_mutation_destination_trusted(mutation, destination)
+                if transaction_anchor is not None and workspace_root is not None:
+                    ensure_trusted_direct_child(
+                        transaction_anchor,
+                        workspace_root,
+                        stage_paths[destination],
+                    )
                 _commit_staged_file(stage_paths[destination], destination)
                 committed.append(destination)
                 files_by_path[destination].state = MutationState.COMMITTED
@@ -621,25 +867,60 @@ def execute_xml_transaction(
             failed_result.state = MutationState.FAILED
             failed_result.error = str(exc)
             rollback_errors: list[str] = []
+            unsafe_path_error = _unsafe_path_error(exc)
             if committed and control is not None:
                 control.set_phase(OperationPhase.ROLLBACK)
             for destination in reversed(committed):
-                rollback_path = destination.with_name(
-                    f".{destination.name}.{transaction_id}.rollback.tmp"
-                )
-                rollback_paths.add(rollback_path)
                 try:
+                    rollback_path = _workspace_path(
+                        transaction_anchor,
+                        workspace_root,
+                        destination,
+                        transaction_id,
+                        destination_indexes[destination],
+                        "rollback",
+                    )
+                    rollback_paths.add(rollback_path)
                     mutation = mutations_by_path[destination]
-                    _ensure_mutation_destination_trusted(mutation, destination)
-                    _restore_backup(backups[destination], destination, rollback_path)
+
+                    def validate_rollback_paths() -> None:
+                        _ensure_mutation_destination_trusted(mutation, destination)
+                        if transaction_anchor is not None and workspace_root is not None:
+                            ensure_trusted_direct_child(
+                                transaction_anchor,
+                                backups[destination].parent,
+                                backups[destination],
+                            )
+                            ensure_trusted_direct_child(
+                                transaction_anchor,
+                                workspace_root,
+                                rollback_path,
+                            )
+
+                    _restore_backup(
+                        backups[destination],
+                        destination,
+                        rollback_path,
+                        before_copy=validate_rollback_paths,
+                        before_replace=validate_rollback_paths,
+                    )
                     files_by_path[destination].state = MutationState.ROLLED_BACK
                 except Exception as rollback_exc:
+                    if unsafe_path_error is None:
+                        unsafe_path_error = _unsafe_path_error(rollback_exc)
                     message = f"{destination}: {rollback_exc}"
                     rollback_errors.append(message)
                     files_by_path[destination].state = MutationState.FAILED
                     files_by_path[destination].rollback_error = str(rollback_exc)
             outcome = MutationOutcome.FAILED if rollback_errors or not committed else MutationOutcome.ROLLED_BACK
-            return XmlTransactionResult(outcome, backups, str(exc), rollback_errors, files)
+            return XmlTransactionResult(
+                outcome,
+                backups,
+                str(exc),
+                rollback_errors,
+                files,
+                unsafe_path_error,
+            )
 
         return XmlTransactionResult(MutationOutcome.SUCCESS, backups, files=files)
     except OperationCancelled as exc:
@@ -650,10 +931,29 @@ def execute_xml_transaction(
             files=files,
         )
     except Exception as exc:
-        return XmlTransactionResult(MutationOutcome.FAILED, backups, str(exc), files=files)
+        return XmlTransactionResult(
+            MutationOutcome.FAILED,
+            backups,
+            str(exc),
+            files=files,
+            unsafe_path_error=_unsafe_path_error(exc),
+        )
     finally:
-        for path in [*stage_paths.values(), *rollback_paths]:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        cleanup_paths = [*stage_paths.values(), *rollback_paths]
+        if (
+            transaction_anchor is not None
+            and workspace_parent is not None
+            and workspace_root is not None
+        ):
+            _cleanup_transaction_workspace(
+                transaction_anchor,
+                workspace_parent,
+                workspace_root,
+                cleanup_paths,
+            )
+        else:
+            for path in cleanup_paths:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass

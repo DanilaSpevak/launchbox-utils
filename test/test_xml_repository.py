@@ -43,6 +43,36 @@ class XmlRepositoryTests(LaunchBoxTestCase):
             self.assertEqual(len(snapshot.platforms), 1)
             self.assertEqual(snapshot.metadata_path, root / "Data" / "Platforms.xml")
 
+    def test_platform_catalog_post_guard_replaces_parse_error_with_trust_failure(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            metadata_path = root / "Data" / "Platforms.xml"
+            metadata_path.write_text("<broken", encoding="utf-8")
+            unsafe_error = UnsafeDatabasePathError(
+                "metadata path changed during parse",
+                reason="reparse_point",
+                path=root / "Data",
+            )
+
+            with patch(
+                "launchbox_tools.xml_repository.platforms_metadata_path",
+                side_effect=[metadata_path, unsafe_error],
+            ) as guard:
+                with self.assertRaises(UnsafeDatabasePathError) as context:
+                    load_platform_catalog(root)
+
+            self.assertIs(context.exception, unsafe_error)
+            self.assertEqual(guard.call_count, 2)
+
+    def test_platform_catalog_preserves_parse_error_when_post_guard_is_safe(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            metadata_path = root / "Data" / "Platforms.xml"
+            metadata_path.write_text("<broken", encoding="utf-8")
+
+            with self.assertRaises(ET.ParseError):
+                load_platform_catalog(root)
+
     def test_platform_database_tree_guards_immediately_around_parse(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
@@ -70,6 +100,29 @@ class XmlRepositoryTests(LaunchBoxTestCase):
 
             self.assertIsNotNone(tree)
             self.assertEqual(events, ["guard", "guard", "parse", "guard"])
+
+    def test_platform_database_post_guard_replaces_parse_error_with_trust_failure(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root)
+            platform = load_platforms(root)[0]
+            platform.database_xml.write_text("<broken", encoding="utf-8")
+            unsafe_error = UnsafeDatabasePathError(
+                "platform path changed during parse",
+                reason="reparse_point",
+                path=platform.database_xml,
+                platform_name=platform.name,
+            )
+
+            with patch(
+                "launchbox_tools.xml_repository.ensure_platform_database_path",
+                side_effect=[platform.database_xml, platform.database_xml, unsafe_error],
+            ) as guard:
+                with self.assertRaises(UnsafeDatabasePathError) as context:
+                    load_platform_database_tree(platform, root)
+
+            self.assertIs(context.exception, unsafe_error)
+            self.assertEqual(guard.call_count, 3)
 
     def test_platform_database_tree_returns_none_without_parsing_missing_file(self) -> None:
         with self.make_root() as temp_dir:

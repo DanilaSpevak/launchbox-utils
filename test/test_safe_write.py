@@ -1,7 +1,11 @@
 import io
+import os
+import sys
+import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
+import launchbox_tools.safe_write as safe_write
 from launchbox_tools.models import MutationOutcome, MutationState
 from launchbox_tools.operation_lifecycle import OperationCancelled, OperationControl, OperationPhase
 from launchbox_tools.paths import UnsafeDatabasePathError
@@ -21,7 +25,12 @@ from launchbox_tools.safe_write import (
 )
 from launchbox_tools.xml_repository import child_text, parse_xml
 
-from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
+from test.support import (
+    CancelAfterCheckpoints,
+    LaunchBoxTestCase,
+    create_directory_junction,
+    remove_directory_junction,
+)
 
 
 class SafeWriteTests(LaunchBoxTestCase):
@@ -307,9 +316,20 @@ class SafeWriteTests(LaunchBoxTestCase):
             tree.getroot().find("Value").text = "new"
             control = OperationControl()
 
-            def cancel_stage_write(path: Path, payload: bytes, *, control=None) -> None:
+            def cancel_stage_write(
+                path: Path,
+                payload: bytes,
+                *,
+                control=None,
+                exclusive=False,
+            ) -> None:
                 control.request_cancel()
-                _write_bytes_with_checkpoints(path, payload, control=control)
+                _write_bytes_with_checkpoints(
+                    path,
+                    payload,
+                    control=control,
+                    exclusive=exclusive,
+                )
 
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
                 with patch(
@@ -394,6 +414,26 @@ class SafeWriteTests(LaunchBoxTestCase):
                 reserve_unique_backup_root(backup_parent, "run-id")
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "preserve me")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
+    def test_reserve_unique_backup_root_rejects_backups_junction(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            backup_parent = root / "Data" / "Backups"
+            external_dir = root / "ExternalBackups"
+            external_dir.mkdir()
+            create_directory_junction(backup_parent, external_dir)
+            try:
+                with self.assertRaises(UnsafeDatabasePathError):
+                    reserve_unique_backup_root(
+                        backup_parent,
+                        "run",
+                        trusted_parent=root / "Data",
+                        trust_anchor=root,
+                    )
+                self.assertFalse((external_dir / "run").exists())
+            finally:
+                remove_directory_junction(backup_parent)
 
     def test_write_xml_tree_safely_cleans_unique_temp_after_validation_failure(self) -> None:
         with self.make_root() as temp_dir:
@@ -493,6 +533,206 @@ class SafeWriteTests(LaunchBoxTestCase):
             self.assertFalse(list(root.glob("*.stage.tmp")))
             self.assertFalse(list(root.glob("*.rollback.tmp")))
 
+    def test_trusted_xml_transaction_rolls_back_in_workspace_and_cleans_it(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            platforms_dir = root / "Data" / "Platforms"
+            first = platforms_dir / "First.xml"
+            second = platforms_dir / "Second.xml"
+            first.write_text("<Root><Value>first</Value></Root>", encoding="utf-8")
+            second.write_text("<Root><Value>second</Value></Root>", encoding="utf-8")
+            originals = {first: first.read_bytes(), second: second.read_bytes()}
+            trees = [ET.parse(first), ET.parse(second)]
+            trees[0].getroot().find("Value").text = "changed-first"
+            trees[1].getroot().find("Value").text = "changed-second"
+            commit_calls = 0
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated second commit failure")
+                stage_path.replace(destination)
+
+            mutations = [
+                XmlMutation(path, tree, trusted_parent=platforms_dir, trust_anchor=root)
+                for path, tree in zip((first, second), trees)
+            ]
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch.object(safe_write, "_commit_staged_file", side_effect=fail_second_commit):
+                    transaction = execute_xml_transaction(
+                        mutations,
+                        root / "Data" / "Backups" / "run",
+                    )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.ROLLED_BACK, transaction)
+            self.assertEqual(first.read_bytes(), originals[first])
+            self.assertEqual(second.read_bytes(), originals[second])
+            self.assertFalse((root / ".launchbox-utils-work").exists())
+
+    def test_trusted_xml_transaction_accounts_for_workspace_guard_failure_during_rollback(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            platforms_dir = root / "Data" / "Platforms"
+            first = platforms_dir / "First.xml"
+            second = platforms_dir / "Second.xml"
+            first.write_text("<Root><Value>first</Value></Root>", encoding="utf-8")
+            second.write_text("<Root><Value>second</Value></Root>", encoding="utf-8")
+            trees = [ET.parse(first), ET.parse(second)]
+            commit_calls = 0
+            real_workspace_path = safe_write._workspace_path
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated second commit failure")
+                stage_path.replace(destination)
+
+            def reject_rollback(*args, **kwargs) -> Path:
+                if args[-1] == "rollback":
+                    raise UnsafeDatabasePathError(
+                        "workspace changed before rollback",
+                        reason="reparse_point",
+                    )
+                return real_workspace_path(*args, **kwargs)
+
+            mutations = [
+                XmlMutation(path, tree, trusted_parent=platforms_dir, trust_anchor=root)
+                for path, tree in zip((first, second), trees)
+            ]
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                with patch.object(safe_write, "_commit_staged_file", side_effect=fail_second_commit):
+                    with patch.object(safe_write, "_workspace_path", side_effect=reject_rollback):
+                        transaction = execute_xml_transaction(
+                            mutations,
+                            root / "Data" / "Backups" / "run",
+                        )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(transaction.files[0].state, MutationState.FAILED)
+            self.assertIn("workspace changed before rollback", transaction.files[0].rollback_error)
+            self.assertIsInstance(transaction.unsafe_path_error, UnsafeDatabasePathError)
+            self.assertEqual(len(transaction.rollback_errors), 1)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows symlink integration test")
+    def test_trusted_xml_transaction_never_overwrites_precreated_rollback_symlink(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            platforms_dir = root / "Data" / "Platforms"
+            first = platforms_dir / "First.xml"
+            second = platforms_dir / "Second.xml"
+            first.write_text("<Root><Value>first</Value></Root>", encoding="utf-8")
+            second.write_text("<Root><Value>second</Value></Root>", encoding="utf-8")
+            trees = [ET.parse(first), ET.parse(second)]
+            sentinel = root / "rollback-sentinel.xml"
+            sentinel.write_text("rollback-sentinel", encoding="utf-8")
+            commit_calls = 0
+            rollback_path: Path | None = None
+            real_workspace_path = safe_write._workspace_path
+
+            def fail_second_commit(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 2:
+                    raise OSError("simulated second commit failure")
+                stage_path.replace(destination)
+
+            def precreate_rollback(*args, **kwargs) -> Path:
+                nonlocal rollback_path
+                path = real_workspace_path(*args, **kwargs)
+                if args[-1] == "rollback":
+                    rollback_path = path
+                    try:
+                        os.symlink(sentinel, path)
+                    except OSError as exc:
+                        self.skipTest(f"Windows file symlink is unavailable: {exc}")
+                return path
+
+            mutations = [
+                XmlMutation(path, tree, trusted_parent=platforms_dir, trust_anchor=root)
+                for path, tree in zip((first, second), trees)
+            ]
+            try:
+                with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                    with patch.object(safe_write, "_commit_staged_file", side_effect=fail_second_commit):
+                        with patch.object(safe_write, "_workspace_path", side_effect=precreate_rollback):
+                            transaction = execute_xml_transaction(
+                                mutations,
+                                root / "Data" / "Backups" / "run",
+                            )
+
+                self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+                self.assertEqual(transaction.files[0].state, MutationState.FAILED)
+                self.assertEqual(sentinel.read_text(encoding="utf-8"), "rollback-sentinel")
+            finally:
+                if rollback_path is not None and rollback_path.exists():
+                    rollback_path.unlink()
+                    workspace_root = rollback_path.parent
+                    if workspace_root.exists():
+                        workspace_root.rmdir()
+                    workspace_parent = root / ".launchbox-utils-work"
+                    if workspace_parent.exists():
+                        workspace_parent.rmdir()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
+    def test_trusted_xml_transaction_rejects_backup_junction_before_rollback_read(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            platforms_dir = root / "Data" / "Platforms"
+            first = platforms_dir / "First.xml"
+            second = platforms_dir / "Second.xml"
+            first.write_text("<Root><Value>first</Value></Root>", encoding="utf-8")
+            second.write_text("<Root><Value>second</Value></Root>", encoding="utf-8")
+            trees = [ET.parse(first), ET.parse(second)]
+            trees[0].getroot().find("Value").text = "changed-first"
+            trees[1].getroot().find("Value").text = "changed-second"
+            backup_run = root / "Data" / "Backups" / "run"
+            external_dir = root / "ExternalBackup"
+            external_dir.mkdir()
+            external_backup = external_dir / first.name
+            external_backup.write_text(
+                "<Root><Value>attacker</Value></Root>",
+                encoding="utf-8",
+            )
+            numbered_backup = backup_run / "0001"
+            saved_backup = backup_run / "0001-saved"
+            commit_calls = 0
+            swapped = False
+
+            def swap_backup_then_fail(stage_path: Path, destination: Path) -> None:
+                nonlocal commit_calls, swapped
+                commit_calls += 1
+                if commit_calls == 2:
+                    numbered_backup.rename(saved_backup)
+                    create_directory_junction(numbered_backup, external_dir)
+                    swapped = True
+                    raise OSError("simulated second commit failure")
+                stage_path.replace(destination)
+
+            mutations = [
+                XmlMutation(path, tree, trusted_parent=platforms_dir, trust_anchor=root)
+                for path, tree in zip((first, second), trees)
+            ]
+            try:
+                with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                    with patch.object(
+                        safe_write,
+                        "_commit_staged_file",
+                        side_effect=swap_backup_then_fail,
+                    ):
+                        transaction = execute_xml_transaction(mutations, backup_run)
+            finally:
+                if swapped:
+                    remove_directory_junction(numbered_backup)
+                    saved_backup.rename(numbered_backup)
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(transaction.files[0].state, MutationState.FAILED)
+            self.assertIsInstance(transaction.unsafe_path_error, UnsafeDatabasePathError)
+            self.assertEqual(child_text(parse_xml(first), "Value"), "changed-first")
+            self.assertEqual(external_backup.read_text(encoding="utf-8"), "<Root><Value>attacker</Value></Root>")
+
     def test_xml_transaction_reports_rollback_failure(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
@@ -585,6 +825,32 @@ class SafeWriteTests(LaunchBoxTestCase):
 
             self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
             self.assertEqual(destination.read_bytes(), original)
+            self.assertFalse(backup_root.exists())
+
+    def test_xml_transaction_rejects_mixed_trust_configuration_before_backup(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            trusted = root / "Data" / "Platforms" / "NES.xml"
+            untrusted = root / "other.xml"
+            trusted.write_text("<Root />", encoding="utf-8")
+            untrusted.write_text("<Root />", encoding="utf-8")
+            backup_root = root / "Backups"
+
+            transaction = execute_xml_transaction(
+                [
+                    XmlMutation(
+                        trusted,
+                        ET.parse(trusted),
+                        trusted_parent=trusted.parent,
+                        trust_anchor=root,
+                    ),
+                    XmlMutation(untrusted, ET.parse(untrusted)),
+                ],
+                backup_root,
+            )
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertIn("cannot share a transaction", transaction.error)
             self.assertFalse(backup_root.exists())
 
     def test_xml_transaction_backup_failure_does_not_stage_or_commit(self) -> None:
@@ -683,12 +949,16 @@ class SafeWriteTests(LaunchBoxTestCase):
             original = destination.read_bytes()
             tree = ET.parse(destination)
             tree.getroot().find("Value").text = "new"
-            guard_calls = 0
+            stage_validated = False
+            real_validate = safe_write._validate_xml_file
 
-            def fail_precommit(*_args, **_kwargs) -> None:
-                nonlocal guard_calls
-                guard_calls += 1
-                if guard_calls == 4:
+            def validate_stage(path: Path, *, control=None) -> None:
+                nonlocal stage_validated
+                real_validate(path, control=control)
+                stage_validated = True
+
+            def fail_precommit(_anchor, _parent, path, **_kwargs) -> None:
+                if stage_validated and path == destination:
                     raise UnsafeDatabasePathError(
                         "path changed after stage",
                         reason="reparse_point",
@@ -705,13 +975,14 @@ class SafeWriteTests(LaunchBoxTestCase):
                 "launchbox_tools.safe_write.ensure_trusted_direct_child",
                 side_effect=fail_precommit,
             ):
-                with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
-                    with patch("launchbox_tools.safe_write._commit_staged_file") as commit:
-                        transaction = execute_xml_transaction([mutation], root / "Backups")
+                with patch.object(safe_write, "_validate_xml_file", side_effect=validate_stage):
+                    with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                        with patch("launchbox_tools.safe_write._commit_staged_file") as commit:
+                            transaction = execute_xml_transaction([mutation], root / "Backups")
 
-            self.assertEqual(guard_calls, 4)
             self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
             self.assertEqual(transaction.files[0].state, MutationState.PREPARED)
+            self.assertIsNotNone(transaction.unsafe_path_error)
             self.assertIn("path changed after stage", transaction.error)
             self.assertEqual(destination.read_bytes(), original)
             commit.assert_not_called()
@@ -738,8 +1009,221 @@ class SafeWriteTests(LaunchBoxTestCase):
                     transaction = execute_xml_transaction([mutation], root / "Backups")
 
             self.assertEqual(transaction.outcome, MutationOutcome.SUCCESS)
-            self.assertEqual(trusted_guard.call_count, 5)
+            self.assertGreaterEqual(trusted_guard.call_count, 9)
             self.assertEqual(child_text(parse_xml(destination), "Value"), "new")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
+    def test_xml_transaction_rechecks_trusted_path_after_hash_before_backup(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            platforms_dir = root / "Data" / "Platforms"
+            destination = platforms_dir / "NES.xml"
+            destination.write_text("<Root><Value>trusted</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "changed"
+            saved_dir = root / "Data" / "SavedPlatforms"
+            external_dir = root / "ExternalPlatforms"
+            external_dir.mkdir()
+            external = external_dir / "NES.xml"
+            external.write_text("<Root><Secret>external-sentinel</Secret></Root>", encoding="utf-8")
+            real_sha256 = safe_write.sha256_file
+            swapped = False
+
+            def hash_then_swap(path: Path, *, control=None) -> str:
+                nonlocal swapped
+                digest = real_sha256(path, control=control)
+                if path == destination and not swapped:
+                    platforms_dir.rename(saved_dir)
+                    create_directory_junction(platforms_dir, external_dir)
+                    swapped = True
+                return digest
+
+            mutation = XmlMutation(
+                destination,
+                tree,
+                trusted_parent=platforms_dir,
+                trust_anchor=root,
+            )
+            try:
+                with patch.object(safe_write, "sha256_file", side_effect=hash_then_swap):
+                    with patch(
+                        "launchbox_tools.runtime_checks.is_launchbox_process_running",
+                        return_value=False,
+                    ):
+                        transaction = execute_xml_transaction([mutation], root / "Backups")
+            finally:
+                if swapped:
+                    remove_directory_junction(platforms_dir)
+                    saved_dir.rename(platforms_dir)
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertIsInstance(transaction.unsafe_path_error, UnsafeDatabasePathError)
+            self.assertEqual(external.read_text(encoding="utf-8"), "<Root><Secret>external-sentinel</Secret></Root>")
+            self.assertFalse(list((root / "Backups").rglob("NES.xml")))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
+    def test_xml_transaction_cleans_workspace_after_real_post_stage_junction_swap(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            platforms_dir = root / "Data" / "Platforms"
+            destination = platforms_dir / "NES.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            original = destination.read_bytes()
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            saved_dir = root / "Data" / "SavedPlatforms"
+            external_dir = root / "ExternalPlatforms"
+            external_dir.mkdir()
+            external = external_dir / "NES.xml"
+            external.write_text("<Root><Value>external</Value></Root>", encoding="utf-8")
+            real_validate = safe_write._validate_xml_file
+            swapped = False
+
+            def validate_then_swap(path: Path, *, control=None) -> None:
+                nonlocal swapped
+                real_validate(path, control=control)
+                if path.name.endswith(".stage.xml") and not swapped:
+                    platforms_dir.rename(saved_dir)
+                    create_directory_junction(platforms_dir, external_dir)
+                    swapped = True
+
+            mutation = XmlMutation(
+                destination,
+                tree,
+                trusted_parent=platforms_dir,
+                trust_anchor=root,
+            )
+            try:
+                with patch.object(
+                    safe_write,
+                    "_validate_xml_file",
+                    side_effect=validate_then_swap,
+                ):
+                    with patch(
+                        "launchbox_tools.runtime_checks.is_launchbox_process_running",
+                        return_value=False,
+                    ):
+                        with patch.object(safe_write, "_commit_staged_file") as commit:
+                            transaction = execute_xml_transaction(
+                                [mutation],
+                                root / "Backups",
+                            )
+            finally:
+                if swapped:
+                    remove_directory_junction(platforms_dir)
+                    saved_dir.rename(platforms_dir)
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertEqual(transaction.files[0].state, MutationState.PREPARED)
+            self.assertIsInstance(transaction.unsafe_path_error, UnsafeDatabasePathError)
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertEqual(external.read_text(encoding="utf-8"), "<Root><Value>external</Value></Root>")
+            commit.assert_not_called()
+            self.assertFalse((root / ".launchbox-utils-work").exists())
+            self.assertFalse(list(root.rglob("*.stage.xml")))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows symlink integration test")
+    def test_xml_transaction_rejects_precreated_stage_symlink_in_workspace(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "Data" / "Platforms" / "NES.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            workspace_parent = root / ".launchbox-utils-work"
+            workspace_root = workspace_parent / "prepared"
+            workspace_root.mkdir(parents=True)
+            sentinel = root / "external-sentinel.xml"
+            sentinel.write_text("external-sentinel", encoding="utf-8")
+            stage_path = workspace_root / "0001.stage.xml"
+            try:
+                os.symlink(sentinel, stage_path)
+            except OSError as exc:
+                self.skipTest(f"Windows file symlink is unavailable: {exc}")
+
+            mutation = XmlMutation(
+                destination,
+                tree,
+                trusted_parent=destination.parent,
+                trust_anchor=root,
+            )
+            with patch.object(
+                safe_write,
+                "_reserve_transaction_workspace",
+                return_value=(workspace_parent, workspace_root),
+            ):
+                with patch(
+                    "launchbox_tools.runtime_checks.is_launchbox_process_running",
+                    return_value=False,
+                ):
+                    transaction = execute_xml_transaction([mutation], root / "Backups")
+
+            self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+            self.assertIsInstance(transaction.unsafe_path_error, UnsafeDatabasePathError)
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "external-sentinel")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
+    def test_xml_transaction_cleanup_never_follows_swapped_workspace_junction(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "Data" / "Platforms" / "NES.xml"
+            destination.write_text("<Root><Value>old</Value></Root>", encoding="utf-8")
+            tree = ET.parse(destination)
+            tree.getroot().find("Value").text = "new"
+            external_dir = root / "ExternalWorkspace"
+            external_dir.mkdir()
+            real_validate = safe_write._validate_xml_file
+            workspace_root: Path | None = None
+            saved_workspace: Path | None = None
+            external_stage: Path | None = None
+
+            def validate_then_swap_workspace(path: Path, *, control=None) -> None:
+                nonlocal workspace_root, saved_workspace, external_stage
+                real_validate(path, control=control)
+                if not path.name.endswith(".stage.xml") or workspace_root is not None:
+                    return
+                workspace_root = path.parent
+                saved_workspace = workspace_root.with_name(f"{workspace_root.name}-saved")
+                external_stage = external_dir / path.name
+                external_stage.write_text("external-stage-sentinel", encoding="utf-8")
+                workspace_root.rename(saved_workspace)
+                create_directory_junction(workspace_root, external_dir)
+
+            mutation = XmlMutation(
+                destination,
+                tree,
+                trusted_parent=destination.parent,
+                trust_anchor=root,
+            )
+            try:
+                with patch.object(
+                    safe_write,
+                    "_validate_xml_file",
+                    side_effect=validate_then_swap_workspace,
+                ):
+                    with patch(
+                        "launchbox_tools.runtime_checks.is_launchbox_process_running",
+                        return_value=False,
+                    ):
+                        transaction = execute_xml_transaction([mutation], root / "Backups")
+
+                self.assertEqual(transaction.outcome, MutationOutcome.FAILED)
+                self.assertIsInstance(transaction.unsafe_path_error, UnsafeDatabasePathError)
+                self.assertIsNotNone(external_stage)
+                self.assertEqual(
+                    external_stage.read_text(encoding="utf-8"),
+                    "external-stage-sentinel",
+                )
+            finally:
+                if workspace_root is not None and workspace_root.exists():
+                    remove_directory_junction(workspace_root)
+                if saved_workspace is not None and saved_workspace.exists():
+                    for path in saved_workspace.iterdir():
+                        path.unlink()
+                    saved_workspace.rmdir()
+                workspace_parent = root / ".launchbox-utils-work"
+                if workspace_parent.exists():
+                    workspace_parent.rmdir()
 
     def test_xml_transaction_keeps_unattempted_files_prepared_after_late_commit_failure(self) -> None:
         with self.make_root() as temp_dir:

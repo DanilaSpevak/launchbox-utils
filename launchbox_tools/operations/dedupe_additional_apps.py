@@ -295,14 +295,20 @@ def dedupe_additional_apps_for_platform(
     run_id: str | None = None,
     *,
     control: OperationControl | None = None,
-) -> tuple[AdditionalAppsDedupeResult, MutationOutcome, list[str], list[MutationFileResult]]:
+) -> tuple[
+    AdditionalAppsDedupeResult,
+    MutationOutcome,
+    list[str],
+    list[MutationFileResult],
+    UnsafeDatabasePathError | None,
+]:
     if control is not None:
         control.checkpoint()
     result = AdditionalAppsDedupeResult(platform=platform)
     tree = load_platform_database_tree(platform, root, control=control)
     if tree is None:
         result.warnings.append(f"Platform XML not found: {platform.database_xml}")
-        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, [], []
+        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, [], [], None
     entries, warnings = load_application_entries(
         platform,
         root,
@@ -331,7 +337,7 @@ def dedupe_additional_apps_for_platform(
             if duplicates
             else []
         )
-        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, [], files
+        return result, MutationOutcome.DRY_RUN if not apply_changes else MutationOutcome.SUCCESS, [], files, None
 
     removable_duplicates = [
         duplicate
@@ -354,7 +360,7 @@ def dedupe_additional_apps_for_platform(
             state=MutationState.FAILED,
             error=error,
         )
-        return result, MutationOutcome.FAILED, [], [file_result]
+        return result, MutationOutcome.FAILED, [], [file_result], None
 
     try:
         if control is not None:
@@ -369,7 +375,7 @@ def dedupe_additional_apps_for_platform(
             for duplicate in result.duplicates
         ]
         file_result = MutationFileResult(platform.database_xml.resolve(strict=False))
-        return result, MutationOutcome.CANCELLED, [], [file_result]
+        return result, MutationOutcome.CANCELLED, [], [file_result], None
 
     transaction = execute_xml_transaction(
         [
@@ -396,7 +402,13 @@ def dedupe_additional_apps_for_platform(
         ]
     if transaction.outcome != MutationOutcome.CANCELLED:
         result.warnings.sort()
-    return result, transaction.outcome, transaction.rollback_errors, transaction.files
+    return (
+        result,
+        transaction.outcome,
+        transaction.rollback_errors,
+        transaction.files,
+        transaction.unsafe_path_error,
+    )
 
 
 def run_additional_apps_dedupe(
@@ -463,7 +475,12 @@ def _run_additional_apps_dedupe(
     def ensure_backup_root() -> Path:
         nonlocal backup_root
         if backup_root is None:
-            backup_root = reserve_unique_backup_root(backup_parent, backup_name)
+            backup_root = reserve_unique_backup_root(
+                backup_parent,
+                backup_name,
+                trusted_parent=root / "Data",
+                trust_anchor=root,
+            )
         return backup_root
 
     results: list[AdditionalAppsDedupeResult] = []
@@ -476,7 +493,13 @@ def _run_additional_apps_dedupe(
             if control is not None:
                 control.set_phase(OperationPhase.SCAN)
                 control.checkpoint()
-            result, outcome, platform_rollback_errors, platform_files = dedupe_additional_apps_for_platform(
+            (
+                result,
+                outcome,
+                platform_rollback_errors,
+                platform_files,
+                platform_unsafe_path_error,
+            ) = dedupe_additional_apps_for_platform(
                 platform,
                 root,
                 apply_changes,
@@ -488,6 +511,9 @@ def _run_additional_apps_dedupe(
             outcomes.append(outcome)
             rollback_errors.extend(platform_rollback_errors)
             file_results.extend(platform_files)
+            if platform_unsafe_path_error is not None:
+                unsafe_path_error = platform_unsafe_path_error
+                break
             if outcome == MutationOutcome.CANCELLED:
                 cancelled_error = result.error or "Operation cancelled"
                 break
@@ -589,5 +615,11 @@ def _run_additional_apps_dedupe(
         manifest_root = backup_root if unsafe_path_error is not None else ensure_backup_root()
         if manifest_root is None:
             raise RuntimeError("Backup root was not initialized for apply manifest")
-        write_mutation_manifest(run_result, manifest_root, "dedupe_additional_apps", changes)
+        write_mutation_manifest(
+            run_result,
+            manifest_root,
+            "dedupe_additional_apps",
+            changes,
+            trust_anchor=root,
+        )
     return run_result

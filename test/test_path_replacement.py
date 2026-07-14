@@ -679,6 +679,7 @@ class PathReplacementTests(LaunchBoxTestCase):
                 )
             )
             self.assertTrue(any(result.backup_paths for result in run_result.results))
+            self.assertFalse((root / ".launchbox-utils-work").exists())
             manifest = json.loads(run_result.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["outcome"], "rolled_back")
             self.assertEqual(

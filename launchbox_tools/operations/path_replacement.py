@@ -394,8 +394,13 @@ def _run_path_replacement(
         if control is not None:
             control.set_phase(OperationPhase.FINALIZE)
         if apply_changes:
-            backup_root = reserve_unique_backup_root(backup_parent, backup_name)
-            _write_path_replacement_manifest(run_result, backup_root)
+            backup_root = reserve_unique_backup_root(
+                backup_parent,
+                backup_name,
+                trusted_parent=root / "Data",
+                trust_anchor=root,
+            )
+            _write_path_replacement_manifest(run_result, backup_root, trust_anchor=root)
         return run_result
 
     try:
@@ -431,8 +436,13 @@ def _run_path_replacement(
         if control is not None:
             control.set_phase(OperationPhase.FINALIZE)
         if apply_changes:
-            backup_root = reserve_unique_backup_root(backup_parent, backup_name)
-            _write_path_replacement_manifest(run_result, backup_root)
+            backup_root = reserve_unique_backup_root(
+                backup_parent,
+                backup_name,
+                trusted_parent=root / "Data",
+                trust_anchor=root,
+            )
+            _write_path_replacement_manifest(run_result, backup_root, trust_anchor=root)
         return run_result
 
     if planning_errors:
@@ -448,8 +458,13 @@ def _run_path_replacement(
                 run_id=run_id,
             )
             if apply_changes:
-                backup_root = reserve_unique_backup_root(backup_parent, backup_name)
-                _write_path_replacement_manifest(run_result, backup_root)
+                backup_root = reserve_unique_backup_root(
+                    backup_parent,
+                    backup_name,
+                    trusted_parent=root / "Data",
+                    trust_anchor=root,
+                )
+                _write_path_replacement_manifest(run_result, backup_root, trust_anchor=root)
             return run_result
 
         run_result = MutationRunResult(
@@ -460,8 +475,13 @@ def _run_path_replacement(
             run_id=run_id,
         )
         if apply_changes:
-            backup_root = reserve_unique_backup_root(backup_parent, backup_name)
-            _write_path_replacement_manifest(run_result, backup_root)
+            backup_root = reserve_unique_backup_root(
+                backup_parent,
+                backup_name,
+                trusted_parent=root / "Data",
+                trust_anchor=root,
+            )
+            _write_path_replacement_manifest(run_result, backup_root, trust_anchor=root)
         return run_result
 
     if not apply_changes:
@@ -480,7 +500,12 @@ def _run_path_replacement(
     if platforms_xml is None:
         raise RuntimeError("Platform catalog path was not initialized")
 
-    backup_root = reserve_unique_backup_root(backup_parent, backup_name)
+    backup_root = reserve_unique_backup_root(
+        backup_parent,
+        backup_name,
+        trusted_parent=root / "Data",
+        trust_anchor=root,
+    )
     mutations: list[XmlMutation] = []
     if platforms_changed:
         mutations.append(
@@ -529,6 +554,7 @@ def _run_path_replacement(
         run_result,
         backup_root,
         backup_paths=transaction.backup_paths,
+        trust_anchor=root,
     )
     return run_result
 
@@ -538,6 +564,7 @@ def _write_path_replacement_manifest(
     backup_root: Path,
     *,
     backup_paths: dict[Path, Path] | None = None,
+    trust_anchor: Path | None = None,
 ) -> None:
     files_by_path = {
         file_result.path.resolve(strict=False): file_result
@@ -572,4 +599,10 @@ def _write_path_replacement_manifest(
                 }
             )
         result.backup_paths = result_backups
-    write_mutation_manifest(run_result, backup_root, "replace_paths", changes)
+    write_mutation_manifest(
+        run_result,
+        backup_root,
+        "replace_paths",
+        changes,
+        trust_anchor=trust_anchor,
+    )

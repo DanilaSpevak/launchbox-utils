@@ -25,7 +25,9 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 - Lexical и canonical containment платформенных XML.
 - Запрет reparse points, junctions и symlink от канонического корня через `Data`
   до конечного XML.
-- Повторная проверка перед backup, stage, каждым commit и rollback.
+- Повторная проверка source и destination перед backup, stage, каждым commit и rollback.
+- Доверенная граница для mutation lock, backup root/files, manifest и root-level
+  transaction workspace.
 - Единые fail-closed ошибки в audit, dry-run, apply, CLI и GUI.
 
 ## Out of scope
@@ -45,6 +47,11 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 - Канонический XML является непосредственным потомком ожидаемого каталога.
 - После canonical resolve корня компоненты `Data`, `Platforms` и XML не являются
   reparse points; alias/junction на сам выбранный корень допустим.
+- Stage и rollback не создаются рядом с `Data/Platforms/*.xml`: они эксклюзивно
+  создаются в `.launchbox-utils-work/<uuid>` и удаляются guarded cleanup без
+  перехода по подменённому reparse point.
+- Backup root, backup XML, mutation lock и manifest проверяются непосредственно
+  перед filesystem open/replace; rollback повторно проверяет backup перед чтением.
 - Ошибка до запуска не создаёт backup/manifest и остаётся доменным исключением.
   После создания backup операция возвращает `FAILED` либо `PARTIAL`, не разрешает
   новый commit и отражает фактический результат в manifest, CLI, GUI и отчётах.
@@ -52,8 +59,10 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 
 ## Фазы, состояния и необратимые границы
 
-Путь проверяется до и после каждого repository read, в начале transaction, перед backup и stage,
-непосредственно перед каждым `os.replace` в commit и перед restore в rollback.
+Путь проверяется до и после каждого repository read, включая parse failure, в начале
+transaction, до и после source hash/backup copy, перед stage, непосредственно перед
+каждым `os.replace` в commit и перед каждым чтением/replace в rollback. Workspace,
+backup и manifest проходят ту же проверку перед созданием, open и cleanup.
 Необратимой границей остаётся `begin_commit()`.
 
 ## Этапы реализации
@@ -72,16 +81,20 @@ dedupe, replace-paths, CLI, GUI, документация и реальные Wi
 | Traversal, absolute/UNC, DOS reserved, invalid или слишком длинное имя | Операция прекращается до чтения внешнего файла |
 | `COM¹`–`COM³`, `LPT¹`–`LPT³` и варианты с расширением | Операция прекращается как для соответствующего ASCII DOS device name |
 | Reparse/junction в `Data`, `Platforms` или XML | Audit, dry-run и apply прекращаются fail-closed |
+| Junction в `Data/Backups` или подмена backup перед rollback | Внешний backup не создаётся и не читается; rollback получает `FAILED` с диагностикой |
+| Junction в `Data` до открытия mutation lock | Lock во внешнем каталоге не создаётся |
 | Junction появляется после catalog load, но до platform parse | Повторный read guard блокирует внешний XML до backup |
 | Junction появляется в dedupe после commit предыдущей платформы | Новые платформы не обрабатываются; операция возвращает `PARTIAL`, а manifest, CLI, GUI и отчёты показывают committed и failed файлы |
 | Подмена пути после stage | Commit блокируется; подготовленный apply получает `FAILED` manifest |
+| Подмена transaction workspace либо заранее созданный stage/rollback symlink | Внешний файл не перезаписывается; guarded cleanup не следует по junction |
 | Ошибка GUI до confirmation | Confirmation и worker не запускаются; traceback не показывается |
 
 ## Критерии приёмки и команды проверки
 
 - Табличные unit-тесты всех классов имён и canonical containment.
 - Sentinel-тесты подтверждают отсутствие чтения и записи вне LaunchBox root.
-- Реальные Windows junction-тесты initial/late race и тест повторной pre-commit проверки.
+- Реальные Windows junction/symlink-тесты initial/late race, lock, backup,
+  manifest, stage, rollback и guarded temp cleanup.
 - Тесты dedupe, replace-paths, CLI и GUI error paths.
 - Реальный Tk smoke для ошибки до confirmation.
 - `python -m unittest discover -s test -p "test_*.py" -v`

@@ -123,9 +123,9 @@ Any operation that modifies LaunchBox XML must follow these rules:
 - The temporary XML must be parsed successfully before replacing the original file.
 - Only the intended XML elements should be changed.
 
-Multi-file mutations use the shared transaction executor in `safe_write.py`: plan and validate all serialized XML, back up every destination, stage and parse every temporary file, then commit with atomic replacement. Every apply run receives a UUID and exclusively creates a backup root named `<Operation>-<timestamp>-<uuid>`. Each destination in a transaction receives a numbered backup subdirectory (`0001`, `0002`, and so on), and backup files are created exclusively, so an existing backup is never replaced. Stage, rollback, and manifest temporary files include the run UUID and are removed in `finally`. If a later commit fails, already committed files are restored from backup in reverse order.
+Multi-file mutations use the shared transaction executor in `safe_write.py`: plan and validate all serialized XML, back up every destination, stage and parse every temporary file, then commit with atomic replacement. Every apply run receives a UUID and exclusively creates a backup root named `<Operation>-<timestamp>-<uuid>`. Each destination in a transaction receives a numbered backup subdirectory (`0001`, `0002`, and so on), and backup files are created exclusively, so an existing backup is never replaced. Trusted transactions keep exclusive stage and rollback files in a per-run root-level workspace, `.launchbox-utils-work/<uuid>`, rather than beside a database XML. The workspace and manifest temporary file are removed in guarded `finally` cleanup; cleanup refuses to follow a reparse point if the path was swapped. If a later commit fails, already committed files are restored from a revalidated backup in reverse order.
 
-Only one mutation may run for a LaunchBox installation at a time. Apply operations acquire a non-blocking OS lock on `Data/.launchbox-utils-mutation.lock` before reading XML and hold it through safety checks, backup, commit or rollback, manifest writing, and cleanup. The lock metadata records the operation, run UUID, PID, and UTC start time. A competing apply fails immediately with `MutationBlockedError(reason="mutation_in_progress")`; dry-run operations do not acquire this lock. The lock file is retained, while the OS releases the lock automatically when the owning process exits.
+Only one mutation may run for a LaunchBox installation at a time. Apply operations acquire a non-blocking OS lock on `Data/.launchbox-utils-mutation.lock` before reading XML and hold it through safety checks, backup, commit or rollback, manifest writing, and cleanup. The `Data` directory and lock path are trusted-path checked before directory creation and again immediately before the lock file is opened. The lock metadata records the operation, run UUID, PID, and UTC start time. A competing apply fails immediately with `MutationBlockedError(reason="mutation_in_progress")`; dry-run operations do not acquire this lock. The lock file is retained, while the OS releases the lock automatically when the owning process exits.
 
 `replace-paths` treats all changed XML files as one transaction. Additional Apps dedupe treats each platform XML as an independent transaction, so one failed platform does not undo successful changes to another platform. Mutation runs expose `dry_run`, `success`, `partial`, `failed`, `rolled_back`, or `cancelled`.
 
@@ -157,7 +157,8 @@ The XML repository is the single trusted-read boundary. It loads `Platforms.xml`
 once into a catalog snapshot that contains the verified metadata path, parsed tree,
 and matching platform list. Platform database readers validate the destination before
 the existence probe, again immediately before parsing, and once more after parsing
-before returning the tree. `replace-paths` reuses the catalog tree instead of reading
+before returning the tree. The post-read guard also runs when parsing fails, so a
+path swap cannot be downgraded to an ordinary `ParseError`. `replace-paths` reuses the catalog tree instead of reading
 `Platforms.xml` a second time. Windows DOS device matching includes the ISO-8859-1
 superscript digits, so `COM¹` through `COM³` and `LPT¹` through `LPT³` are rejected.
 
@@ -168,9 +169,14 @@ junction, or symbolic link. `Data/Platforms.xml` is subject to the same rule as 
 direct child of `Data`.
 
 `XmlMutation` carries its trust anchor and expected parent. The transaction executor
-rechecks the boundary before backup, stage, each commit, and rollback. A failure
+rechecks the source before and after hashing and backup reads, validates the exclusive
+backup destination and hash read, validates the root-level stage/rollback workspace,
+and rechecks the database path before each commit and rollback replace. Backup-root
+reservation and manifest temp/replace operations use the same trust anchor. A failure
 before mutation creates no backup or manifest; a failure after preparation prevents
-new commits and is recorded as a failed transaction. This repeated validation narrows
+new commits and is recorded as a failed transaction. Dedupe receives the structured
+`UnsafeDatabasePathError` from the transaction and stops before the next platform.
+This repeated validation narrows
 filesystem races but does not replace a future handle-relative WinAPI design.
 The same limitation remains for the final trusted-read check and the subsequent file
 open; the pre/post-read checks remove long orchestration gaps but cannot make that

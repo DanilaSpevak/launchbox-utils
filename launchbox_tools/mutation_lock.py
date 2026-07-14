@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterator
 
+from .paths import ensure_trusted_direct_child
 from .runtime_checks import MutationBlockedError
 
 
@@ -81,8 +82,12 @@ def _pid_value(owner: dict[str, object]) -> int | None:
 
 @contextmanager
 def mutation_run_lock(root: Path, operation: str, run_id: str) -> Iterator[Path]:
-    lock_path = root.resolve(strict=False) / "Data" / LOCK_FILE_NAME
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    anchor = root.resolve(strict=False)
+    data_dir = anchor / "Data"
+    lock_path = data_dir / LOCK_FILE_NAME
+    ensure_trusted_direct_child(anchor, data_dir, lock_path)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    ensure_trusted_direct_child(anchor, data_dir, lock_path)
     file = lock_path.open("a+b", buffering=0)
     acquired = False
     try:

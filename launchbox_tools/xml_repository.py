@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import GameEntry, PlatformInfo
-from .operation_lifecycle import OperationControl
+from .operation_lifecycle import OperationCancelled, OperationControl
 from .paths import (
     ensure_platform_database_path,
     platform_database_path,
@@ -97,7 +97,13 @@ def load_platform_catalog(
     control: OperationControl | None = None,
 ) -> PlatformCatalogSnapshot:
     metadata_path = platforms_metadata_path(root)
-    tree = parse_xml_tree(metadata_path, control=control)
+    try:
+        tree = parse_xml_tree(metadata_path, control=control)
+    except OperationCancelled:
+        raise
+    except Exception:
+        platforms_metadata_path(root)
+        raise
     verified_path = platforms_metadata_path(root)
     platforms = _platforms_from_root(root, tree.getroot(), control=control)
     return PlatformCatalogSnapshot(verified_path, tree, tuple(platforms))
@@ -121,7 +127,13 @@ def load_platform_database_tree(
     if not database_xml.exists():
         return None
     database_xml = ensure_platform_database_path(root, platform.name, database_xml)
-    tree = parse_xml_tree(database_xml, control=control)
+    try:
+        tree = parse_xml_tree(database_xml, control=control)
+    except OperationCancelled:
+        raise
+    except Exception:
+        ensure_platform_database_path(root, platform.name, database_xml)
+        raise
     ensure_platform_database_path(root, platform.name, database_xml)
     return tree
 
