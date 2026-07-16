@@ -9,7 +9,7 @@ from launchbox_tools.operation_lifecycle import OperationCancelled, OperationCon
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
 from launchbox_tools.operations.path_replacement import run_path_replacement
 from launchbox_tools.safe_write import XmlMutation, _serialize_xml_tree, execute_xml_transaction
-from launchbox_tools.xml_checkpoint_io import PreservingElementTree
+from launchbox_tools.xml_checkpoint_io import IO_CHUNK_SIZE, PreservingElementTree
 from launchbox_tools.xml_repository import local_name, parse_xml_tree
 
 from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
@@ -175,6 +175,46 @@ class XmlRoundTripTests(LaunchBoxTestCase):
             )
 
             with self.assertRaisesRegex(ET.ParseError, "DOCTYPE is not supported"):
+                parse_xml_tree(xml_path)
+
+    def test_codec_rejects_oversized_xml_declaration_with_bounded_error(self) -> None:
+        with self.make_root() as temp_dir:
+            xml_path = Path(temp_dir) / "oversized-declaration.xml"
+            xml_path.write_bytes(
+                b"<?xml"
+                + b" " * IO_CHUNK_SIZE
+                + b'version="1.0" encoding="utf-8"?>\n<Root>value</Root>\n'
+            )
+
+            with self.assertRaisesRegex(
+                ET.ParseError,
+                "XML declaration exceeds the safe round-trip profile limit",
+            ):
+                parse_xml_tree(xml_path, control=OperationControl())
+
+    def test_codec_preserves_large_xml_declaration_within_profile_bound(self) -> None:
+        with self.make_root() as temp_dir:
+            xml_path = Path(temp_dir) / "large-bounded-declaration.xml"
+            source = (
+                b"<?xml"
+                + b" " * (IO_CHUNK_SIZE // 4)
+                + b'version="1.0" encoding="utf-8"?>\n<Root>value</Root>\n'
+            )
+            xml_path.write_bytes(source)
+
+            tree = parse_xml_tree(xml_path, control=OperationControl())
+
+            self.assertEqual(_serialize_xml_tree(tree), source)
+
+    def test_codec_rejects_empty_namespace_declaration_prefix(self) -> None:
+        with self.make_root() as temp_dir:
+            xml_path = Path(temp_dir) / "empty-namespace-prefix.xml"
+            xml_path.write_text('<Root xmlns:="urn:invalid" />', encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ET.ParseError,
+                "namespace declaration prefix cannot be empty",
+            ):
                 parse_xml_tree(xml_path)
 
     def test_codec_validates_namespace_bindings_while_preserving_prefixes(self) -> None:

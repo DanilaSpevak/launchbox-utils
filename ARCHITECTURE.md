@@ -149,9 +149,13 @@ prefix spelling and scoped namespace bindings without the process-global
 depend on a particular prefix. The transaction serializer consumes that source
 profile; ordinary programmatically created `ElementTree` instances retain the
 legacy UTF-8 `ElementTree.write()` contract. DTDs are rejected during parsing
-because the codec cannot preserve their declarations safely. Attribute quote,
-entity, CDATA and empty-element spelling may be canonicalized, but their semantic
-values and order are retained.
+because the codec cannot preserve their declarations safely. Namespace names and
+declarations are validated before entering the DOM, including empty, unbound and
+reserved prefixes. XML declaration extraction is linear and limited to a 1 MiB
+source prefix; a longer declaration is rejected fail-closed instead of being
+dropped or scanned without a cancellation bound. Attribute quote, entity, CDATA
+and empty-element spelling may be canonicalized, but their semantic values and
+order are retained.
 
 Path replacement maintains canonical file states incrementally during scan and binds each planned change to its file result, so repeated file errors remain O(1) and every change observes the current file state without a synchronization pass. A cancelled dry-run performs no terminal work proportional to the number of changes; snapshotting the much smaller file list remains O(F) in the number of affected XML files. A cancelled apply still writes one complete, atomic manifest during protected finalization. Transaction-state binding, backup mapping, and change serialization are combined into that single O(N) manifest traversal; incomplete manifests and background finalization are not used.
 

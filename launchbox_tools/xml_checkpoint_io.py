@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import codecs
-import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +13,6 @@ from .operation_lifecycle import OperationControl
 IO_CHUNK_SIZE = 1024 * 1024
 XML_CHECKPOINT_INTERVAL = 256
 _PROFILE_PREFIX_LIMIT = IO_CHUNK_SIZE
-_XML_DECLARATION_RE = re.compile(r"\A<\?xml\s+.*?\?>", re.DOTALL)
 _XML_NAMESPACE_URI = "http://www.w3.org/XML/1998/namespace"
 _XMLNS_NAMESPACE_URI = "http://www.w3.org/2000/xmlns/"
 
@@ -142,6 +140,8 @@ class _PreservingTreeBuilder:
                 if name.count(":") != 1:
                     raise ET.ParseError(f"invalid namespace declaration: {name}")
                 prefix = name.split(":", 1)[1]
+                if not prefix:
+                    raise ET.ParseError("namespace declaration prefix cannot be empty")
             else:
                 continue
             if prefix == "xmlns" or value == _XMLNS_NAMESPACE_URI:
@@ -298,8 +298,7 @@ def _source_profile(
         decoded_prefix = prefix_decoder.decode(prefix[len(bom) :], final=False)
     except (LookupError, UnicodeError) as exc:
         raise ET.ParseError(f"could not decode XML source profile: {exc}") from exc
-    declaration_match = _XML_DECLARATION_RE.match(decoded_prefix)
-    declaration = declaration_match.group(0) if declaration_match else None
+    declaration = _xml_declaration_from_prefix(decoded_prefix)
     newline: Literal["\n", "\r\n", "\r"] = detected_newline or "\n"
     return XmlSourceProfile(
         declaration=declaration,
@@ -309,6 +308,24 @@ def _source_profile(
         preamble=tuple(preamble),
         epilogue=tuple(epilogue),
     )
+
+
+def _xml_declaration_from_prefix(decoded_prefix: str) -> str | None:
+    if not decoded_prefix.startswith("<?xml"):
+        return None
+    declaration_start_length = len("<?xml")
+    if (
+        len(decoded_prefix) <= declaration_start_length
+        or decoded_prefix[declaration_start_length] not in " \t\r\n"
+    ):
+        return None
+    declaration_end = decoded_prefix.find("?>", declaration_start_length + 1)
+    if declaration_end < 0:
+        raise ET.ParseError(
+            "XML declaration exceeds the safe round-trip profile limit "
+            f"of {_PROFILE_PREFIX_LIMIT} bytes"
+        )
+    return decoded_prefix[: declaration_end + len("?>")]
 
 
 def _as_element_tree_parse_error(exc: expat.ExpatError) -> ET.ParseError:
@@ -376,6 +393,8 @@ def parse_xml_tree_preserving(
         raise _as_element_tree_parse_error(exc) from exc
     if builder.root is None:
         raise ET.ParseError("XML document has no document element")
+    if control is not None:
+        control.checkpoint()
     profile = _source_profile(
         bytes(prefix),
         declared_encoding,
