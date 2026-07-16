@@ -1006,6 +1006,31 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             )
             self.assertIn("IMPORTANT", remaining[0].tail or "")
 
+    def test_dedupe_reports_first_tail_on_distinct_variant_group(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                """  <AdditionalApplication><GameID>tail-distinct</GameID><Name>First</Name><ApplicationPath>Games/NES/tail-distinct.zip</ApplicationPath></AdditionalApplication>IMPORTANT
+  <AdditionalApplication><GameID>tail-distinct</GameID><Name>Second</Name><ApplicationPath>Games/NES/tail-distinct.zip</ApplicationPath></AdditionalApplication>""",
+            )
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            source = xml_path.read_bytes()
+
+            run_result = run_additional_apps_dedupe(root, apply_changes=False)
+
+            result = run_result.results[0]
+            self.assertEqual(run_result.outcome, MutationOutcome.DRY_RUN)
+            self.assertEqual(result.duplicates, [])
+            self.assertEqual(len(result.ambiguities), 1)
+            self.assertEqual(
+                result.ambiguities[0].differing_fields,
+                ("#parent-content", "Name"),
+            )
+            self.assertEqual(len(result.ambiguities[0].variants), 2)
+            self.assertEqual(xml_path.read_bytes(), source)
+
     def test_dedupe_keeps_identical_entries_in_different_parent_contexts(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
@@ -1037,6 +1062,31 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.assertEqual(len(result.ambiguities), 1)
             self.assertEqual(result.ambiguities[0].differing_fields, ("#parent",))
             self.assertEqual(parent_counts, {"FirstScope": 1, "SecondScope": 1})
+            self.assertEqual(xml_path.read_bytes(), source)
+
+    def test_dedupe_reports_first_tail_across_parent_contexts(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                """  <FirstScope><AdditionalApplication><GameID>tail-parent</GameID><Name>Scoped</Name><ApplicationPath>Games/NES/tail-parent.zip</ApplicationPath></AdditionalApplication>IMPORTANT</FirstScope>
+  <SecondScope><AdditionalApplication><GameID>tail-parent</GameID><Name>Scoped</Name><ApplicationPath>Games/NES/tail-parent.zip</ApplicationPath></AdditionalApplication></SecondScope>""",
+            )
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            source = xml_path.read_bytes()
+
+            run_result = run_additional_apps_dedupe(root, apply_changes=False)
+
+            result = run_result.results[0]
+            self.assertEqual(run_result.outcome, MutationOutcome.DRY_RUN)
+            self.assertEqual(result.duplicates, [])
+            self.assertEqual(len(result.ambiguities), 1)
+            self.assertEqual(
+                result.ambiguities[0].differing_fields,
+                ("#parent", "#parent-content"),
+            )
+            self.assertEqual(len(result.ambiguities[0].variants), 2)
             self.assertEqual(xml_path.read_bytes(), source)
 
     def test_dedupe_removes_only_same_parent_duplicate_across_parent_contexts(self) -> None:

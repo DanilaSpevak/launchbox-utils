@@ -390,6 +390,7 @@ def find_additional_app_duplicates(
     protected_representatives: set[tuple[int, ContextualCanonicalSignature]] = set()
     parent_content_signatures: set[tuple[int, ContextualCanonicalSignature]] = set()
     parent_content_variants: dict[int, list[GameEntry]] = {}
+    parent_content_groups: set[int] = set()
     for index, (entry, key) in enumerate(analyzed_entries):
         if control is not None and (index + 1) % _SCAN_CHECKPOINT_INTERVAL == 0:
             control.checkpoint()
@@ -411,6 +412,8 @@ def find_additional_app_duplicates(
             entry.element.tail or "",
             analysis_checkpoints,
         )
+        if has_parent_content:
+            parent_content_groups.add(group)
         kept = signatures.get(signature)
         if kept is None:
             signatures[signature] = entry
@@ -463,7 +466,7 @@ def find_additional_app_duplicates(
                 analysis_checkpoints,
             )
         )
-        if context_variants:
+        if group in parent_content_groups:
             differing_fields.add("#parent-content")
         ambiguities.append(
             AdditionalApplicationAmbiguity(
