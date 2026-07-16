@@ -43,6 +43,7 @@ CanonicalElement = tuple[
     str,
     tuple["CanonicalElement", ...],
 ]
+ContextualCanonicalSignature = tuple[int, CanonicalElement]
 CanonicalDedupeGroup = tuple[
     tuple[str, ...],
     tuple[str, ...],
@@ -227,6 +228,14 @@ def _field_signatures(
     return {name: tuple(sorted(values)) for name, values in fields.items()}
 
 
+def _entry_parent_identity(entry: GameEntry) -> int:
+    if entry.parent is not None:
+        return id(entry.parent)
+    if entry.element is not None:
+        return id(entry.element)
+    return id(entry)
+
+
 def _differing_fields(
     variants: list[GameEntry],
     root: Path,
@@ -262,6 +271,8 @@ def _differing_fields(
         differing.append("#root")
     if len(set(root_attributes)) > 1:
         differing.append("@attributes")
+    if len({_entry_parent_identity(entry) for entry in variants}) > 1:
+        differing.append("#parent")
     return tuple(sorted(differing, key=str.casefold))
 
 
@@ -374,34 +385,52 @@ def find_additional_app_duplicates(
         union(analyzed_index, primary_representative)
         union(analyzed_index, multiset_representative)
 
-    groups: dict[int, dict[CanonicalElement, GameEntry]] = {}
+    groups: dict[int, dict[ContextualCanonicalSignature, GameEntry]] = {}
     report_keys: dict[int, tuple[str, str]] = {}
-    protected_parent_content: dict[int, list[GameEntry]] = {}
+    protected_representatives: set[tuple[int, ContextualCanonicalSignature]] = set()
+    parent_content_signatures: set[tuple[int, ContextualCanonicalSignature]] = set()
+    parent_content_variants: dict[int, list[GameEntry]] = {}
     for index, (entry, key) in enumerate(analyzed_entries):
         if control is not None and (index + 1) % _SCAN_CHECKPOINT_INTERVAL == 0:
             control.checkpoint()
         if entry.element is None:
             continue
-        signature = _canonical_additional_application(
-            entry.element,
-            root,
-            checkpoint_counter=analysis_checkpoints,
+        signature = (
+            _entry_parent_identity(entry),
+            _canonical_additional_application(
+                entry.element,
+                root,
+                checkpoint_counter=analysis_checkpoints,
+            ),
         )
         group = component(index)
         signatures = groups.setdefault(group, {})
         report_key = report_keys.setdefault(group, key)
+        signature_key = (group, signature)
+        has_parent_content = _has_significant_xml_text(
+            entry.element.tail or "",
+            analysis_checkpoints,
+        )
         kept = signatures.get(signature)
         if kept is None:
             signatures[signature] = entry
+            if has_parent_content:
+                protected_representatives.add(signature_key)
             continue
 
         # ElementTree removes an element together with its tail. Significant tail
         # text belongs to the parent mixed content and must never be discarded.
-        if entry.element is not None and _has_significant_xml_text(
-            entry.element.tail or "",
-            analysis_checkpoints,
-        ):
-            protected_parent_content.setdefault(group, []).append(entry)
+        representative_is_protected = signature_key in protected_representatives
+        if has_parent_content or representative_is_protected:
+            variants = parent_content_variants.setdefault(group, [])
+            first_parent_content_collision = signature_key not in parent_content_signatures
+            if first_parent_content_collision:
+                variants.append(kept)
+                parent_content_signatures.add(signature_key)
+            if has_parent_content:
+                variants.append(entry)
+
+        if has_parent_content:
             continue
 
         duplicates.append(
@@ -416,10 +445,17 @@ def find_additional_app_duplicates(
     for index, (group, signatures) in enumerate(groups.items(), start=1):
         if control is not None and index % _SCAN_CHECKPOINT_INTERVAL == 0:
             control.checkpoint()
-        protected_entries = protected_parent_content.get(group, [])
-        if len(signatures) < 2 and not protected_entries:
+        context_variants = parent_content_variants.get(group, [])
+        if len(signatures) < 2 and not context_variants:
             continue
-        variants = [*signatures.values(), *protected_entries]
+        variants: list[GameEntry] = []
+        variant_ids: set[int] = set()
+        for variant in (*signatures.values(), *context_variants):
+            variant_identity = id(variant)
+            if variant_identity in variant_ids:
+                continue
+            variant_ids.add(variant_identity)
+            variants.append(variant)
         differing_fields = set(
             _differing_fields(
                 variants,
@@ -427,7 +463,7 @@ def find_additional_app_duplicates(
                 analysis_checkpoints,
             )
         )
-        if protected_entries:
+        if context_variants:
             differing_fields.add("#parent-content")
         ambiguities.append(
             AdditionalApplicationAmbiguity(

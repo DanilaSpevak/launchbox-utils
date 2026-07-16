@@ -225,12 +225,12 @@ Platform subfolder names are sanitized of characters invalid in Windows file nam
 
 ## Additional Apps deduplication
 
-`<AdditionalApplication>` entries are first grouped by:
+The primary key for `<AdditionalApplication>` entries is:
 
 - `GameID` (case-insensitive);
 - file path after resolving relative to the LaunchBox root and normalizing (case-insensitive).
 
-Automatic removal is limited to entries whose complete namespace-aware XML content is canonically equal inside one logical dedupe group. Field order, XML 1.0 formatting whitespace (`space`, `tab`, `CR`, `LF`) between immediate fields, known boolean casing, `GameID` casing, and equivalent path spelling are normalized. NBSP and other Unicode whitespace remain significant at mixed-content and parent-tail boundaries. Except for documented domain normalization, whitespace inside field and attribute values remains significant. Every other field remains significant, including `Name`, `CommandLine`, autorun flags, emulator settings, attributes, nested data, and unknown future fields.
+Logical groups connect records with the same primary key or the same complete multisets of normalized direct `GameID` and `ApplicationPath` values. Automatic removal is limited to entries under the same immediate XML parent whose complete namespace-aware XML content is canonically equal inside one logical group. Entries under different parents are preserved as `#parent` ambiguity. Field order, XML 1.0 formatting whitespace (`space`, `tab`, `CR`, `LF`) between immediate fields, known boolean casing, `GameID` casing, and equivalent path spelling are normalized. NBSP and other Unicode whitespace remain significant at mixed-content and parent-tail boundaries; an entry with significant parent tail is preserved and reported as `#parent-content` regardless of its position. Except for documented domain normalization, whitespace inside field and attribute values remains significant. Every other field remains significant, including `Name`, `CommandLine`, autorun flags, emulator settings, attributes, nested data, and unknown future fields.
 
 Groups with the same `GameID` and path but different canonical content are reported as ambiguous and left for manual review. If a group contains `A, A, B`, only the repeated `A` is removable; one `A` and `B` remain. Entries with an empty `GameID` or `ApplicationPath` are skipped and appear in the report warnings.
 
@@ -637,12 +637,12 @@ python launchbox_utils.py audit --only-with-findings
 
 ## Дедупликация Additional Apps
 
-Записи `<AdditionalApplication>` сначала группируются по следующим полям:
+Основной ключ записей `<AdditionalApplication>` состоит из следующих полей:
 
 - `GameID` (без учёта регистра);
 - путь к файлу после разрешения относительно корня LaunchBox и нормализации (без учёта регистра).
 
-Автоматически удаляются только записи с канонически одинаковым полным XML-содержимым. Нормализуются порядок полей, только форматирующие пробелы между XML-элементами, регистр известных булевых значений и `GameID`, а также эквивалентное написание пути. Пробелы внутри значений полей и атрибутов остаются значимыми. Все остальные поля значимы, включая `Name`, `CommandLine`, флаги автозапуска, настройки эмулятора, атрибуты, вложенные данные и неизвестные будущие поля.
+Логическая группа связывает записи с одинаковым основным ключом либо с одинаковыми полными мультимножествами нормализованных непосредственных значений `GameID` и `ApplicationPath`. Автоматически удаляются только записи под одним непосредственным XML-родителем с канонически одинаковым полным namespace-aware XML-содержимым внутри одной логической группы. Записи под разными родителями сохраняются как ambiguity `#parent`. Нормализуются порядок непосредственных полей, только XML-пробелы `space` / `tab` / `CR` / `LF` между ними, регистр известных булевых значений и `GameID`, а также эквивалентное написание пути. NBSP и другие Unicode-пробелы остаются значимыми в mixed content и parent tail; запись со значимым tail сохраняется и отмечается `#parent-content` независимо от своей позиции. За пределами явно описанной доменной нормализации пробелы внутри значений полей и атрибутов остаются значимыми. Все остальные поля значимы, включая `Name`, `CommandLine`, флаги автозапуска, настройки эмулятора, атрибуты, вложенные данные и неизвестные будущие поля.
 
 Группы с одинаковыми `GameID` и путём, но разным каноническим содержимым отмечаются как ambiguous и остаются для ручного решения. Для группы `A, A, B` удалению подлежит только повторный `A`; по одному варианту `A` и `B` сохраняются. Записи с пустым `GameID` или `ApplicationPath` пропускаются и попадают в предупреждения отчёта.
 
