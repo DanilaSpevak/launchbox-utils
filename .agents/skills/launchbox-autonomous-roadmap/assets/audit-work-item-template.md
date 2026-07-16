@@ -18,6 +18,7 @@ design_plan_sha: null
 design_verdict_id: null
 design_verdict_sha256: null
 review_history: []
+defect_history: []
 auditor: null
 decision_required: null
 resume_state: null

@@ -39,7 +39,10 @@ description: Orchestrate independently reviewed LaunchBox Utils roadmap work fro
    run, use `<priority>-item-<first 12 hex of SHA-256(exact UTF-8 title bytes)>`.
    If a slug collides with a different exact title, append the first 12 hex of
    that title's digest; if that still collides, append the full 64-hex digest.
-   Duplicate identical titles in one priority are `decision_required`. Use this
+   If the result ends in reserved `-refresh-<N>` or `-audit-refresh-<N>` where
+   `<N>` is `[1-9][0-9]*`, append `-item-<first 12 hex of the title digest>`.
+   Duplicate identical titles or any remaining collision between one item's base
+   ID and another item's branch family are `decision_required`. Use this
    algorithm for dependency IDs too.
 3. With explicit remote authority, query the complete branch/PR family before
    choosing new versus resume: `agent/<work_item_id>`, implementation
@@ -104,9 +107,14 @@ description: Orchestrate independently reviewed LaunchBox Utils roadmap work fro
    prior review rounds. Review the complete `base_sha..candidate_sha` range.
 3. Classify every finding. Return Blocker/Regression to the implementer and make
    one `fix(review-N): ...` commit per review round. Record reviewer identity,
-   candidate SHA, immutable verdict ID, and verdict in `review_history`.
+   candidate SHA, immutable verdict ID, and verdict in append-only
+   `review_history`. Assign each blocking finding the workflow's canonical
+   `defect_id` and append it to `defect_history`.
 4. Stop after five rounds, after the same defect returns twice, or on any
-   Specification gap. Do not hide Hardening/Refactor in the current candidate.
+   Specification gap. These counters and historical-reviewer exclusions are
+   global for the work item across every superseded PR/refresh; never clear or
+   reset `review_history`, `defect_history`, or `review_round`. Do not hide
+   Hardening/Refactor in the current candidate.
 
 ## Validate and close out
 
@@ -121,8 +129,10 @@ git diff --check
 Add real Windows, process, or hidden-Tk checks required by the work-item plan.
 Before `accepted` or closeout, read PR CI for the exact `candidate_sha` and
 require successful, non-skipped Windows matrix jobs for Python 3.10, 3.11, 3.12,
-and 3.13. A stale/mismatched SHA, missing, skipped, cancelled, inaccessible, or
-failed required job blocks acceptance; handle unavailable or repeatedly
+and 3.13. In every job, require checkout verification evidence showing that
+`github.event.pull_request.head.sha == git rev-parse HEAD == candidate_sha`.
+A stale/mismatched SHA, missing, skipped, cancelled, inaccessible, or failed
+required job blocks acceptance; handle unavailable or repeatedly
 infrastructure-failing CI through `decision_required` as defined by the workflow.
 
 After a positive independent verdict and green CI, verify that canonical `main`
@@ -140,7 +150,8 @@ canonical `main`. Never perform the merge yourself.
 
 - For implementation baseline drift, follow the replacement-branch/PR protocol
   in the workflow. Create a refreshed plan commit, clear candidate, design,
-  verdict and review fields, set `preparing`, and obtain a new independent design
+  and current-verdict fields while preserving cumulative review/defect history
+  and global round count, set `preparing`, and obtain a new independent design
   verdict before `ready → implementing` and transfer of task commits.
   A superseded PR is the only permitted second historical PR: it uses a distinct
   refresh branch and must be closed with a link to the sole new authoritative
@@ -160,7 +171,8 @@ canonical `main`. Never perform the merge yourself.
 - If canonical baseline drifts after an audit reaches `accepted` or
   `awaiting_merge`, use the audit-refresh family with a new
   `docs/plans/<work_item_id>-audit-refresh-<N>.md`, clear prior candidate and
-  verdict state, enter `preparing`, assign a new auditor, and repeat
+  current-verdict state but preserve cumulative review/defect history and round
+  count, enter `preparing`, assign a new auditor, and repeat
   `auditing → recording → reviewing`. Never use implementation refresh.
 - Choose refresh `N` deterministically as one plus the greatest numeric suffix
   already present for that exact refresh family across remote branches and PRs.
