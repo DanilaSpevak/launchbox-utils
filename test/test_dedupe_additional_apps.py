@@ -43,6 +43,29 @@ from test.support import (
 
 
 class DedupeAdditionalAppsTests(LaunchBoxTestCase):
+    def test_duplicate_additional_app_fixture_uses_both_titles(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_games_xml_raw(
+                root,
+                self.duplicate_additional_app_xml(
+                    "game-1",
+                    "Keep",
+                    "Remove",
+                    "Games/NES/duplicate.zip",
+                ),
+            )
+
+            names = [
+                child_text(element, "Name")
+                for element in parse_xml(
+                    root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+                )
+                if local_name(element.tag) == "AdditionalApplication"
+            ]
+
+            self.assertEqual(names, ["Keep", "Remove"])
+
     @unittest.skipUnless(sys.platform == "win32", "Windows junction integration test")
     def test_dedupe_rejects_junction_swapped_after_catalog_before_backup(self) -> None:
         with self.make_root() as temp_dir:
@@ -357,18 +380,22 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
 
             self.assertFalse((root / "Data" / "Backups").exists())
 
-    def test_find_duplicates_checks_cancellation_inside_one_large_element(self) -> None:
+    def test_find_duplicates_checks_cancellation_inside_one_large_nested_tree(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)
             self.write_platforms_xml(root)
-            fields = "\n".join(f"    <CustomField>{index}</CustomField>" for index in range(300))
+            nested_children = "\n".join(
+                f"      <Step>{index}</Step>" for index in range(300)
+            )
             self.write_games_xml_raw(
                 root,
                 f"""  <AdditionalApplication>
     <GameID>game-1</GameID>
     <Name>Large application</Name>
     <ApplicationPath>Games/NES/large.zip</ApplicationPath>
-{fields}
+    <FutureSetting>
+{nested_children}
+    </FutureSetting>
   </AdditionalApplication>""",
             )
             platform = load_platforms(root)[0]
@@ -421,7 +448,7 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             application = self.duplicate_additional_app_xml(
                 "game-1",
                 "Duplicate",
-                "Unused",
+                "Duplicate",
                 "Games/NES/duplicate.zip",
             )
             self.write_games_xml_raw(root, "\n".join(application for _ in range(301)))
@@ -548,7 +575,7 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                 self.duplicate_additional_app_xml(
                     "game-1",
                     "Duplicate",
-                    "Unused",
+                    "Duplicate",
                     "Games/NES/duplicate.zip",
                 ),
             )
@@ -600,7 +627,7 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                 self.duplicate_additional_app_xml(
                     "game-1",
                     "Duplicate",
-                    "Unused",
+                    "Duplicate",
                     "Games/NES/duplicate.zip",
                 ),
             )
@@ -791,7 +818,7 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.write_games_xml_raw(
                 root,
                 self.duplicate_additional_app_xml(
-                    "game-1", "Keep", "Remove", "Games/NES/duplicate.zip"
+                    "game-1", "Keep", "Keep", "Games/NES/duplicate.zip"
                 ),
             )
             xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
@@ -832,7 +859,7 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.write_games_xml_raw(
                 root,
                 self.duplicate_additional_app_xml(
-                    "game-1", "Keep", "Remove", "Games/NES/duplicate.zip"
+                    "game-1", "Keep", "Keep", "Games/NES/duplicate.zip"
                 ),
             )
             xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
@@ -892,15 +919,19 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             write_dedupe_reports(run_result, output_dir, apply_changes=False)
 
             self.assertEqual(xml_path.read_text(encoding="utf-8"), before)
-            self.assertEqual(len(result.duplicates), 3)
-            self.assertEqual(len(result.ambiguities), 12)
+            self.assertEqual(len(result.duplicates), 4)
+            self.assertEqual(len(result.ambiguities), 15)
             ambiguities = {ambiguity.key[0]: ambiguity for ambiguity in result.ambiguities}
             duplicate_keys = {duplicate.key[0] for duplicate in result.duplicates}
+            self.assertIn("nested-exact", duplicate_keys)
             self.assertEqual(ambiguities["command-whitespace"].differing_fields, ("CommandLine",))
             self.assertEqual(ambiguities["future-whitespace"].differing_fields, ("FutureSetting",))
             self.assertEqual(ambiguities["attribute-whitespace"].differing_fields, ("@attributes",))
             self.assertEqual(ambiguities["future-boolean"].differing_fields, ("FutureBoolean",))
             self.assertEqual(ambiguities["mixed-content"].differing_fields, ("FutureSetting",))
+            self.assertEqual(ambiguities["nested-order"].differing_fields, ("FutureSetting",))
+            self.assertEqual(ambiguities["nested-comment-pi"].differing_fields, ("FutureSetting",))
+            self.assertEqual(ambiguities["root-comment-pi"].differing_fields, ("#content",))
             self.assertEqual(ambiguities["repeated-path"].differing_fields, ("ApplicationPath",))
             self.assertEqual(
                 sum(duplicate.key[0] == "repeated-path" for duplicate in result.duplicates),
@@ -913,6 +944,9 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                     "attribute-whitespace",
                     "future-boolean",
                     "mixed-content",
+                    "nested-order",
+                    "nested-comment-pi",
+                    "root-comment-pi",
                 }.isdisjoint(
                     duplicate_keys
                 )
@@ -946,9 +980,9 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.assertEqual(result.state, MutationState.COMMITTED)
             self.assertIsNotNone(result.backup_path)
             self.assertTrue(result.backup_path.exists())
-            self.assertEqual(len(result.duplicates), 3)
-            self.assertEqual(len(result.ambiguities), 12)
-            self.assertEqual(len(remaining), 25)
+            self.assertEqual(len(result.duplicates), 4)
+            self.assertEqual(len(result.ambiguities), 15)
+            self.assertEqual(len(remaining), 32)
             self.assertEqual(sum(child_text(element, "GameID") == "mixed" for element in remaining), 2)
             command_lines = [
                 child_text(element, "CommandLine")
@@ -990,6 +1024,22 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
                     ["Games/NES/repeated-main.zip", "Games/NES/variant-b.zip"],
                 ],
             )
+            self.assertEqual(
+                sum(child_text(element, "GameID") == "nested-order" for element in remaining),
+                2,
+            )
+            self.assertEqual(
+                sum(child_text(element, "GameID") == "nested-exact" for element in remaining),
+                1,
+            )
+            self.assertEqual(
+                sum(child_text(element, "GameID") == "nested-comment-pi" for element in remaining),
+                2,
+            )
+            self.assertEqual(
+                sum(child_text(element, "GameID") == "root-comment-pi" for element in remaining),
+                2,
+            )
 
     def test_dedupe_apply_aborts_when_launchbox_running(self) -> None:
         with self.make_root() as temp_dir:
@@ -997,7 +1047,7 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.write_platforms_xml(root, "Games/NES")
             self.write_games_xml_raw(
                 root,
-                self.duplicate_additional_app_xml("game-1", "Keep", "Remove", "Games/NES/duplicate.zip"),
+                self.duplicate_additional_app_xml("game-1", "Keep", "Keep", "Games/NES/duplicate.zip"),
             )
             xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
             before = xml_path.read_text(encoding="utf-8")
@@ -1014,7 +1064,7 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.write_platforms_xml(root, "Games/NES")
             self.write_games_xml_raw(
                 root,
-                self.duplicate_additional_app_xml("game-1", "Keep", "Remove", "Games/NES/duplicate.zip"),
+                self.duplicate_additional_app_xml("game-1", "Keep", "Keep", "Games/NES/duplicate.zip"),
             )
 
             with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=True):
@@ -1040,12 +1090,12 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.write_platform_games_xml_raw(
                 root,
                 "Nintendo Entertainment System",
-                self.duplicate_additional_app_xml("game-1", "Keep NES", "Remove NES", "Games/NES/duplicate.zip"),
+                self.duplicate_additional_app_xml("game-1", "Keep NES", "Keep NES", "Games/NES/duplicate.zip"),
             )
             self.write_platform_games_xml_raw(
                 root,
                 "Sega Genesis",
-                self.duplicate_additional_app_xml("game-2", "Keep Genesis", "Remove Genesis", "Games/Genesis/duplicate.zip"),
+                self.duplicate_additional_app_xml("game-2", "Keep Genesis", "Keep Genesis", "Games/Genesis/duplicate.zip"),
             )
 
             write_calls = 0

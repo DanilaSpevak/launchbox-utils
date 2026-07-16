@@ -120,6 +120,6 @@ class LaunchBoxTestCase(unittest.TestCase):
   </AdditionalApplication>
   <AdditionalApplication>
     <GameID>{game_id}</GameID>
-    <Name>{keep_title}</Name>
+    <Name>{remove_title}</Name>
     <ApplicationPath>{path}</ApplicationPath>
   </AdditionalApplication>"""

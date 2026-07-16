@@ -4,7 +4,11 @@
     <GameID>exact</GameID><Name>Exact</Name><ApplicationPath>Games/NES/exact.zip</ApplicationPath><AutoRunBefore>True</AutoRunBefore><AutoRunAfter>FALSE</AutoRunAfter><UseEmulator>TRUE</UseEmulator>
   </AdditionalApplication>
   <AdditionalApplication>
-    <UseEmulator>true</UseEmulator><AutoRunAfter>false</AutoRunAfter><AutoRunBefore>true</AutoRunBefore><ApplicationPath>Games\NES\exact.zip</ApplicationPath><Name>Exact</Name><GameID> EXACT </GameID>
+      <UseEmulator>true</UseEmulator>
+
+    <AutoRunAfter>false</AutoRunAfter> <AutoRunBefore>true</AutoRunBefore>
+        <ApplicationPath>Games\NES\exact.zip</ApplicationPath>
+    <Name>Exact</Name><GameID> EXACT </GameID>
   </AdditionalApplication>
   <AdditionalApplication><GameID>command</GameID><Name>Command</Name><ApplicationPath>Games/NES/command.zip</ApplicationPath><CommandLine>-a</CommandLine></AdditionalApplication>
   <AdditionalApplication><GameID>command</GameID><Name>Command</Name><ApplicationPath>Games/NES/command.zip</ApplicationPath><CommandLine>-b</CommandLine></AdditionalApplication>
@@ -29,6 +33,21 @@
   <AdditionalApplication><GameID>future-boolean</GameID><Name>Future boolean</Name><ApplicationPath>Games/NES/future-boolean.zip</ApplicationPath><FutureBoolean>true</FutureBoolean></AdditionalApplication>
   <AdditionalApplication><GameID>mixed-content</GameID><Name>Mixed content</Name><ApplicationPath>Games/NES/mixed-content.zip</ApplicationPath><FutureSetting>before<Part />after  text</FutureSetting></AdditionalApplication>
   <AdditionalApplication><GameID>mixed-content</GameID><Name>Mixed content</Name><ApplicationPath>Games/NES/mixed-content.zip</ApplicationPath><FutureSetting>before<Part />after text</FutureSetting></AdditionalApplication>
+  <AdditionalApplication>
+    <GameID>nested-exact</GameID><Name>Nested exact</Name><ApplicationPath>Games/NES/nested-exact.zip</ApplicationPath><FutureSetting><Step>one</Step><Step>two</Step></FutureSetting>
+  </AdditionalApplication>
+  <AdditionalApplication>
+      <FutureSetting><Step>one</Step><Step>two</Step></FutureSetting>
+
+    <ApplicationPath>Games\NES\nested-exact.zip</ApplicationPath><Name>Nested exact</Name>
+        <GameID> NESTED-EXACT </GameID>
+  </AdditionalApplication>
+  <AdditionalApplication><GameID>nested-order</GameID><Name>Nested order</Name><ApplicationPath>Games/NES/nested-order.zip</ApplicationPath><FutureSetting><Step>one</Step><Step>two</Step></FutureSetting></AdditionalApplication>
+  <AdditionalApplication><GameID>nested-order</GameID><Name>Nested order</Name><ApplicationPath>Games/NES/nested-order.zip</ApplicationPath><FutureSetting><Step>two</Step><Step>one</Step></FutureSetting></AdditionalApplication>
+  <AdditionalApplication><GameID>nested-comment-pi</GameID><Name>Nested comment PI</Name><ApplicationPath>Games/NES/nested-comment-pi.zip</ApplicationPath><FutureSetting><?step before?><Part /><!--after--></FutureSetting></AdditionalApplication>
+  <AdditionalApplication><GameID>nested-comment-pi</GameID><Name>Nested comment PI</Name><ApplicationPath>Games/NES/nested-comment-pi.zip</ApplicationPath><FutureSetting><!--after--><Part /><?step before?></FutureSetting></AdditionalApplication>
+  <AdditionalApplication><GameID>root-comment-pi</GameID><!--first--><Name>Root comment PI</Name><?step after-name?><ApplicationPath>Games/NES/root-comment-pi.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication><?step after-name?><GameID>root-comment-pi</GameID><Name>Root comment PI</Name><!--first--><ApplicationPath>Games/NES/root-comment-pi.zip</ApplicationPath></AdditionalApplication>
   <AdditionalApplication><GameID>repeated-path</GameID><Name>Repeated path</Name><ApplicationPath>Games/NES/repeated-main.zip</ApplicationPath><ApplicationPath>Games/NES/variant-a.zip</ApplicationPath></AdditionalApplication>
   <AdditionalApplication><GameID>repeated-path</GameID><Name>Repeated path</Name><ApplicationPath>Games\NES\repeated-main.zip</ApplicationPath><ApplicationPath>Games\NES\variant-a.zip</ApplicationPath></AdditionalApplication>
   <AdditionalApplication><GameID>repeated-path</GameID><Name>Repeated path</Name><ApplicationPath>Games/NES/repeated-main.zip</ApplicationPath><ApplicationPath>Games/NES/variant-b.zip</ApplicationPath></AdditionalApplication>

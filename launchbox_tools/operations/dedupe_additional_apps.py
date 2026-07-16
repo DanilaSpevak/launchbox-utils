@@ -58,8 +58,8 @@ def _normalize_xml_text(
     is_entry_field: bool = False,
     has_children: bool = False,
 ) -> str:
-    if has_children and not text.strip():
-        return ""
+    if has_children:
+        return text
     if is_entry_field and tag == "GameID":
         return text.strip().casefold()
     if is_entry_field and tag == "ApplicationPath":
@@ -78,6 +78,7 @@ def _canonical_element(
     root: Path,
     is_entry_field: bool = False,
     include_tail: bool = False,
+    ignore_formatting_only_tail: bool = False,
     checkpoint_counter: _CheckpointCounter | None = None,
 ) -> CanonicalElement:
     if checkpoint_counter is not None:
@@ -86,28 +87,69 @@ def _canonical_element(
     canonical_tag = element.tag if isinstance(element.tag, str) else tag
     attributes = tuple(sorted(element.attrib.items()))
     children = tuple(
-        sorted(
-            _canonical_element(
-                child,
-                root,
-                is_entry_field=tag == "AdditionalApplication",
-                include_tail=True,
-                checkpoint_counter=checkpoint_counter,
-            )
-            for child in element
+        _canonical_element(
+            child,
+            root,
+            include_tail=True,
+            checkpoint_counter=checkpoint_counter,
         )
+        for child in element
     )
-    text = _normalize_xml_text(tag, element.text or "", root, is_entry_field, has_children=bool(children))
-    tail = element.tail or ""
-    if not include_tail or not tail.strip():
+    text = _normalize_xml_text(
+        tag,
+        element.text or "",
+        root,
+        is_entry_field,
+        has_children=bool(children),
+    )
+    tail = (element.tail or "") if include_tail else ""
+    if ignore_formatting_only_tail and not tail.strip():
         tail = ""
     return canonical_tag, attributes, text, tail, children
+
+
+def _has_order_sensitive_root_content(element: ET.Element) -> bool:
+    return (
+        bool((element.text or "").strip())
+        or any(not isinstance(child.tag, str) for child in element)
+        or any(bool((child.tail or "").strip()) for child in element)
+    )
+
+
+def _canonical_additional_application(
+    element: ET.Element,
+    root: Path,
+    checkpoint_counter: _CheckpointCounter | None = None,
+) -> CanonicalElement:
+    if checkpoint_counter is not None:
+        checkpoint_counter.tick()
+    tag = local_name(element.tag)
+    canonical_tag = element.tag if isinstance(element.tag, str) else tag
+    attributes = tuple(sorted(element.attrib.items()))
+    order_sensitive = _has_order_sensitive_root_content(element)
+    children = tuple(
+        _canonical_element(
+            child,
+            root,
+            is_entry_field=isinstance(child.tag, str),
+            include_tail=order_sensitive,
+            ignore_formatting_only_tail=order_sensitive,
+            checkpoint_counter=checkpoint_counter,
+        )
+        for child in element
+    )
+    if not order_sensitive:
+        children = tuple(sorted(children))
+    text = element.text or ""
+    if not text.strip():
+        text = ""
+    return canonical_tag, attributes, text, "", children
 
 
 def additional_app_canonical_signature(entry: GameEntry, root: Path) -> CanonicalElement | None:
     if entry.entry_type != "AdditionalApplication" or entry.element is None:
         return None
-    return _canonical_element(entry.element, root)
+    return _canonical_additional_application(entry.element, root)
 
 
 def _field_signatures(
@@ -127,6 +169,14 @@ def _field_signatures(
                 checkpoint_counter=checkpoint_counter,
             )
         )
+    if _has_order_sensitive_root_content(entry.element):
+        fields["#content"] = [
+            _canonical_additional_application(
+                entry.element,
+                root,
+                checkpoint_counter,
+            )
+        ]
     return {name: tuple(sorted(values)) for name, values in fields.items()}
 
 
@@ -203,7 +253,7 @@ def find_additional_app_duplicates(
             continue
 
         signature = (
-            _canonical_element(
+            _canonical_additional_application(
                 entry.element,
                 root,
                 checkpoint_counter=analysis_checkpoints,
