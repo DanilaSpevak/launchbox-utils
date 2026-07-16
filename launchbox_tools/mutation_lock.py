@@ -60,16 +60,6 @@ def _read_owner(file: BinaryIO) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _owner_text(owner: dict[str, object]) -> str:
-    details: list[str] = []
-    for label, key in (("operation", "operation"), ("run_id", "run_id"), ("pid", "pid")):
-        value = owner.get(key)
-        if value not in (None, ""):
-            details.append(f"{label}={value}")
-    suffix = f" ({', '.join(details)})" if details else ""
-    return f"Another LaunchBox Utils mutation is already running{suffix}."
-
-
 def _string_value(owner: dict[str, object], key: str) -> str | None:
     value = owner.get(key)
     return value if isinstance(value, str) and value else None
@@ -77,7 +67,21 @@ def _string_value(owner: dict[str, object], key: str) -> str | None:
 
 def _pid_value(owner: dict[str, object]) -> int | None:
     value = owner.get("pid")
-    return value if isinstance(value, int) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _owner_text(owner: dict[str, object]) -> str:
+    details: list[str] = []
+    typed_details = (
+        ("operation", _string_value(owner, "operation")),
+        ("run_id", _string_value(owner, "run_id")),
+        ("pid", _pid_value(owner)),
+    )
+    for label, value in typed_details:
+        if value is not None:
+            details.append(f"{label}={value}")
+    suffix = f" ({', '.join(details)})" if details else ""
+    return f"Another LaunchBox Utils mutation is already running{suffix}."
 
 
 @contextmanager
