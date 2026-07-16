@@ -37,9 +37,11 @@ Tests use temporary fake LaunchBox trees and must not modify a real database.
 2. Add or update tests for behavior changes.
 3. Update README or ARCHITECTURE when user-facing behavior changes.
 4. Record significant new architectural or product directions as a `Proposed` ADR; add implementation work to the roadmap only after the decision is `Accepted`.
-5. For P0 and cross-cutting changes, include the agreed invariants, scope, implementation slices, and acceptance evidence described in the [roadmap workflow](docs/roadmap-workflow.md).
-6. Mark a roadmap item `[x]` only after acceptance criteria and required validation pass; completing the main implementation is not sufficient.
-7. Do not commit `launchbox_utils.ini`, report output, or backup folders.
+5. For P0 and cross-cutting changes, include the agreed invariants, scope, implementation slices, adversarial matrix, baseline-to-candidate differential proof, conservation evidence, and acceptance evidence described in the [roadmap workflow](docs/roadmap-workflow.md).
+6. A regression test for a reported defect must fail on the defect baseline and pass on the candidate; replaying only the original repro or running the full suite is not an acceptance review.
+7. P0 self-review does not replace an independent acceptance review by someone who did not author the candidate behavior.
+8. Mark a roadmap item `[x]` only after the applicable adversarial acceptance gate and required validation pass; completing the main implementation is not sufficient.
+9. Do not commit `launchbox_utils.ini`, report output, or backup folders.
 
 ## XML Mutation Rules
 
