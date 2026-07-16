@@ -331,3 +331,26 @@ finding в любой позиции. Ambiguity variants содержат тол
 
 Статус остаётся `[ ]`: это implementation/self-validation evidence, а не новое
 независимое acceptance review.
+
+## Итоговое независимое acceptance review candidate `f210da3`
+
+Независимая приёмка выполнена 2026-07-16 относительно baseline `31ce86c`.
+Проверяемый diff добавляет group-level фиксацию значимого parent content и два
+регрессионных сценария; решение об автоматическом удалении, mutation state и
+границы транзакции не меняются.
+
+- те же два candidate regression-теста в изолированной копии baseline падают
+  только на отсутствующем `#parent-content`, а на candidate проходят;
+- перестановки first/variant и переход между разными immediate parents покрыты
+  точными проверками outcome, нулевого списка duplicates, состава ambiguity,
+  числа variants и неизменности исходных XML-байтов;
+- focused dedupe suite: 40 тестов успешно;
+- полный discovery, включая реальные Windows, Tk и process-level проверки:
+  267 тестов успешно;
+- `compileall` и `git diff --check` успешно;
+- новая структура хранит не более одного маркера на logical group со значимым
+  tail, не добавляет обходов XML и не меняет cancellation checkpoints;
+- итоговое review: 0 Blocker, 0 Regression, 0 Specification gap и 0 новых
+  замечаний в границах задачи.
+
+Задача принята; родительская отметка в `ROADMAP.md` переведена в `[x]`.
