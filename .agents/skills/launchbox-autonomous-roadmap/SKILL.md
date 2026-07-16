@@ -119,10 +119,19 @@ git diff --check
 ```
 
 Add real Windows, process, or hidden-Tk checks required by the work-item plan.
-After a positive independent verdict, verify that canonical `main` still equals
-`base_sha`, copy `assets/acceptance-report-template.md`, and record the exact
-verdict bytes, external ID, and SHA-256. A metadata-only closeout may set `[x]`
-and move the PR to `awaiting_merge`; it must not change verified behavior.
+Before `accepted` or closeout, read PR CI for the exact `candidate_sha` and
+require successful, non-skipped Windows matrix jobs for Python 3.10, 3.11, 3.12,
+and 3.13. A stale/mismatched SHA, missing, skipped, cancelled, inaccessible, or
+failed required job blocks acceptance; handle unavailable or repeatedly
+infrastructure-failing CI through `decision_required` as defined by the workflow.
+
+After a positive independent verdict and green CI, verify that canonical `main`
+still equals `base_sha`. Copy `assets/acceptance-report-template.md` to
+`docs/plans/<work_item_id>-acceptance.md`; on implementation refresh `<N>`, use
+`docs/plans/<work_item_id>-refresh-<N>-acceptance.md`. Never overwrite historical
+evidence. Record the exact verdict bytes, external ID, and SHA-256. A
+metadata-only closeout may set `[x]` and move the PR to `awaiting_merge`; it must
+not change verified behavior.
 
 Do not start the next item until the accepted result is integrated into
 canonical `main`. Never perform the merge yourself.
@@ -138,10 +147,13 @@ canonical `main`. Never perform the merge yourself.
   draft PR after state transfer.
 - For audit work items, copy `assets/audit-work-item-template.md`, use
   `auditing → recording → reviewing`, and close with
-  `assets/audit-acceptance-report-template.md`. Use auditor and recorder roles,
-  not an implementer. Record the new auditor before entering `auditing` and the
-  recorder before `auditing → recording`. Keep remediation findings proposed
-  until the owner accepts their roadmap priority.
+  `assets/audit-acceptance-report-template.md` at
+  `docs/plans/<work_item_id>-audit-acceptance.md`; on audit refresh `<N>`, use
+  `docs/plans/<work_item_id>-audit-refresh-<N>-acceptance.md`. Never overwrite
+  historical evidence. Use auditor and recorder roles, not an implementer.
+  Record the new auditor before entering `auditing` and the recorder before
+  `auditing → recording`. Keep remediation findings proposed until the owner
+  accepts their roadmap priority.
 - To repeat a suspended audit after its accepted remediation is integrated, use
   the workflow's audit-refresh protocol. Never route an audit through
   `implementing` or reuse the implementation drift reset.

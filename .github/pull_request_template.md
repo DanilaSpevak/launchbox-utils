@@ -48,6 +48,10 @@ For `work_item_type: audit`, use the audit templates packaged with
 - [ ] `compileall`
 - [ ] `git diff --check`
 - [ ] Required Windows / process / GUI checks
+- [ ] PR CI for exact `candidate_sha`: Windows Python 3.10
+- [ ] PR CI for exact `candidate_sha`: Windows Python 3.11
+- [ ] PR CI for exact `candidate_sha`: Windows Python 3.12
+- [ ] PR CI for exact `candidate_sha`: Windows Python 3.13
 - [ ] Independent acceptance verdict
 
 ## Findings and follow-ups

@@ -589,6 +589,19 @@ Orchestrator записывает его внешний `verdict_id` и SHA-256 
 state block. Closeout report копирует эти байты без изменений и повторяет hash;
 любое отличие, дополнение либо новая интерпретация требует нового verdict.
 
+До `accepted` и closeout orchestrator читает CI именно для `candidate_sha` и
+требует успешные, non-skipped Windows jobs Python 3.10, 3.11, 3.12 и 3.13.
+Отсутствующий, stale, skipped, cancelled, недоступный или failed обязательный job
+не считается зелёным; недоступность и повторная инфраструктурная ошибка
+обрабатываются через `decision_required` по правилам выше.
+
+Итоговое evidence версионируется без перезаписи в `docs/plans/`. Обычная
+реализация использует `<work_item_id>-acceptance.md`, implementation refresh —
+`<work_item_id>-refresh-<N>-acceptance.md`, первичный audit —
+`<work_item_id>-audit-acceptance.md`, audit refresh —
+`<work_item_id>-audit-refresh-<N>-acceptance.md`. Конфликт с существующим путём
+даёт `decision_required`; исторические reports не переписываются.
+
 Перед closeout и непосредственно перед merge orchestrator fetch'ит canonical
 default branch и требует, чтобы её HEAD оставался равен проверенному `base_sha`.
 Если baseline продвинулся, verdict аннулируется, задача возвращается

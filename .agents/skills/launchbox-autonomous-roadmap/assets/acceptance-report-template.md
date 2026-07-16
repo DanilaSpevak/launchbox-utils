@@ -1,5 +1,7 @@
 # Acceptance review: <result>
 
+<!-- Store at the deterministic docs/plans path defined by SKILL.md. -->
+
 ## Immutable verdict
 
 - Verdict ID: `<external PR review/comment id>`

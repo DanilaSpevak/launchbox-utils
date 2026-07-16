@@ -1,5 +1,7 @@
 # Independent audit acceptance: <result>
 
+<!-- Store at the deterministic docs/plans path defined by SKILL.md. -->
+
 ## Immutable audit verdict
 
 - Verdict ID: `<external PR review/comment id>`
