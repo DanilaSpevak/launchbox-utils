@@ -1,0 +1,4 @@
+interface:
+  display_name: "LaunchBox Autonomous Roadmap"
+  short_description: "Run independently reviewed roadmap work loops"
+  default_prompt: "Use $launchbox-autonomous-roadmap to prepare and execute the highest-priority eligible LaunchBox Utils roadmap item, including an upper item that still needs a design plan."
