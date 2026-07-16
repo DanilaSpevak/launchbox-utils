@@ -11,10 +11,12 @@
   fake roots unless the owner explicitly supplies and authorizes another target.
 - Keep one write-capable implementer per worktree. Preserve unrelated user
   changes; never stash, reset, amend, or include them in task commits.
-- Work only on `agent/<work_item_id>` task branches after the one-time bootstrap.
-  Push and maintain a draft PR only when the current prompt/Goal explicitly
-  grants task-branch push authority; otherwise enter `decision_required`. Never
-  merge, tag, or release.
+- Work only in the task-branch family defined by the roadmap workflow after the
+  one-time bootstrap: `agent/<work_item_id>`, implementation
+  `agent/<work_item_id>-refresh-<N>`, or audit
+  `agent/<work_item_id>-audit-refresh-<N>`. Push and maintain a draft PR only
+  when the current prompt/Goal explicitly grants task-branch push authority;
+  otherwise enter `decision_required`. Never merge, tag, or release.
 - Before review, run focused checks plus:
 
   ```powershell
