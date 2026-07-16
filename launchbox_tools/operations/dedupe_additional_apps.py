@@ -24,6 +24,7 @@ from ..operation_lifecycle import OperationCancelled, OperationControl, Operatio
 from ..paths import UnsafeDatabasePathError, path_key, resolve_launchbox_path
 from ..runtime_checks import ensure_safe_to_mutate
 from ..safe_write import XmlMutation, execute_xml_transaction, reserve_unique_backup_root
+from ..xml_checkpoint_io import xml_attribute_identities, xml_element_name_identity
 from ..xml_repository import (
     existing_platform_database_paths,
     load_application_entries,
@@ -33,9 +34,27 @@ from ..xml_repository import (
 )
 
 
-CanonicalElement = tuple[str, tuple[tuple[str, str], ...], str, str, tuple["CanonicalElement", ...]]
+CanonicalName = tuple[str, str, str]
+CanonicalAttribute = tuple[CanonicalName, str]
+CanonicalElement = tuple[
+    CanonicalName,
+    tuple[CanonicalAttribute, ...],
+    str,
+    str,
+    tuple["CanonicalElement", ...],
+]
+CanonicalDedupeGroup = tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+]
+AnalyzedEntry = tuple[
+    GameEntry,
+    tuple[str, str],
+]
 _CANONICAL_BOOLEAN_FIELDS = frozenset({"AutoRunBefore", "AutoRunAfter", "UseEmulator"})
 _SCAN_CHECKPOINT_INTERVAL = 256
+_TEXT_CHECKPOINT_CHARACTERS = 1024 * 1024
+_XML_FORMATTING_WHITESPACE = " \t\r\n"
 
 
 class _CheckpointCounter:
@@ -49,6 +68,23 @@ class _CheckpointCounter:
         self.count += 1
         if self.count % _SCAN_CHECKPOINT_INTERVAL == 0:
             self.control.checkpoint()
+
+    def checkpoint(self) -> None:
+        if self.control is not None:
+            self.control.checkpoint()
+
+
+def _has_significant_xml_text(
+    text: str,
+    checkpoint_counter: _CheckpointCounter | None = None,
+) -> bool:
+    for offset in range(0, len(text), _TEXT_CHECKPOINT_CHARACTERS):
+        if checkpoint_counter is not None:
+            checkpoint_counter.checkpoint()
+        chunk = text[offset : offset + _TEXT_CHECKPOINT_CHARACTERS]
+        if chunk.strip(_XML_FORMATTING_WHITESPACE):
+            return True
+    return False
 
 
 def _normalize_xml_text(
@@ -84,8 +120,8 @@ def _canonical_element(
     if checkpoint_counter is not None:
         checkpoint_counter.tick()
     tag = local_name(element.tag)
-    canonical_tag = element.tag if isinstance(element.tag, str) else tag
-    attributes = tuple(sorted(element.attrib.items()))
+    canonical_tag = xml_element_name_identity(element)
+    attributes = tuple(sorted(xml_attribute_identities(element)))
     children = tuple(
         _canonical_element(
             child,
@@ -103,17 +139,28 @@ def _canonical_element(
         has_children=bool(children),
     )
     tail = (element.tail or "") if include_tail else ""
-    if ignore_formatting_only_tail and not tail.strip():
+    if ignore_formatting_only_tail and not _has_significant_xml_text(
+        tail,
+        checkpoint_counter,
+    ):
         tail = ""
     return canonical_tag, attributes, text, tail, children
 
 
-def _has_order_sensitive_root_content(element: ET.Element) -> bool:
-    return (
-        bool((element.text or "").strip())
-        or any(not isinstance(child.tag, str) for child in element)
-        or any(bool((child.tail or "").strip()) for child in element)
-    )
+def _has_order_sensitive_root_content(
+    element: ET.Element,
+    checkpoint_counter: _CheckpointCounter | None = None,
+) -> bool:
+    if _has_significant_xml_text(element.text or "", checkpoint_counter):
+        return True
+    for child in element:
+        if checkpoint_counter is not None:
+            checkpoint_counter.tick()
+        if not isinstance(child.tag, str):
+            return True
+        if _has_significant_xml_text(child.tail or "", checkpoint_counter):
+            return True
+    return False
 
 
 def _canonical_additional_application(
@@ -124,9 +171,9 @@ def _canonical_additional_application(
     if checkpoint_counter is not None:
         checkpoint_counter.tick()
     tag = local_name(element.tag)
-    canonical_tag = element.tag if isinstance(element.tag, str) else tag
-    attributes = tuple(sorted(element.attrib.items()))
-    order_sensitive = _has_order_sensitive_root_content(element)
+    canonical_tag = xml_element_name_identity(element)
+    attributes = tuple(sorted(xml_attribute_identities(element)))
+    order_sensitive = _has_order_sensitive_root_content(element, checkpoint_counter)
     children = tuple(
         _canonical_element(
             child,
@@ -141,7 +188,7 @@ def _canonical_additional_application(
     if not order_sensitive:
         children = tuple(sorted(children))
     text = element.text or ""
-    if not text.strip():
+    if not _has_significant_xml_text(text, checkpoint_counter):
         text = ""
     return canonical_tag, attributes, text, "", children
 
@@ -169,7 +216,7 @@ def _field_signatures(
                 checkpoint_counter=checkpoint_counter,
             )
         )
-    if _has_order_sensitive_root_content(entry.element):
+    if _has_order_sensitive_root_content(entry.element, checkpoint_counter):
         fields["#content"] = [
             _canonical_additional_application(
                 entry.element,
@@ -186,19 +233,15 @@ def _differing_fields(
     checkpoint_counter: _CheckpointCounter | None = None,
 ) -> tuple[str, ...]:
     field_maps: list[dict[str, tuple[CanonicalElement, ...]]] = []
-    root_tags: list[str] = []
-    root_attributes: list[tuple[tuple[str, str], ...]] = []
+    root_tags: list[CanonicalName] = []
+    root_attributes: list[tuple[CanonicalAttribute, ...]] = []
     for entry in variants:
         if checkpoint_counter is not None:
             checkpoint_counter.tick()
         field_maps.append(_field_signatures(entry, root, checkpoint_counter))
         if entry.element is not None:
-            root_tags.append(
-                entry.element.tag
-                if isinstance(entry.element.tag, str)
-                else local_name(entry.element.tag)
-            )
-            root_attributes.append(tuple(sorted(entry.element.attrib.items())))
+            root_tags.append(xml_element_name_identity(entry.element))
+            root_attributes.append(tuple(sorted(xml_attribute_identities(entry.element))))
 
     names: set[str] = set()
     for fields in field_maps:
@@ -234,6 +277,31 @@ def additional_app_dedupe_key(entry: GameEntry) -> tuple[str, str] | None:
     return game_id.casefold(), path_key(entry.resolved_path)
 
 
+def _additional_app_group_identity(
+    element: ET.Element,
+    root: Path,
+    checkpoint_counter: _CheckpointCounter | None = None,
+) -> CanonicalDedupeGroup:
+    game_ids: list[str] = []
+    application_paths: list[str] = []
+    for child in element:
+        if checkpoint_counter is not None:
+            checkpoint_counter.tick()
+        name = local_name(child.tag)
+        if name not in {"GameID", "ApplicationPath"}:
+            continue
+        value = _normalize_xml_text(
+            name,
+            child.text or "",
+            root,
+            is_entry_field=True,
+            has_children=len(child) > 0,
+        )
+        target = game_ids if name == "GameID" else application_paths
+        target.append(value)
+    return tuple(sorted(game_ids)), tuple(sorted(application_paths))
+
+
 def find_additional_app_duplicates(
     platform: PlatformInfo,
     root: Path,
@@ -241,15 +309,36 @@ def find_additional_app_duplicates(
     *,
     control: OperationControl | None = None,
 ) -> tuple[list[AdditionalApplicationDuplicate], list[AdditionalApplicationAmbiguity], list[str]]:
-    groups: dict[tuple[str, str], dict[CanonicalElement, GameEntry]] = {}
-    # The primary key organizes conservative variants, but an exact full signature
-    # remains safe to match when repeated key fields appear in a different order.
-    representatives_by_signature: dict[CanonicalElement, GameEntry] = {}
-    protected_parent_content: dict[tuple[str, str], list[GameEntry]] = {}
+    analyzed_entries: list[AnalyzedEntry] = []
+    parents: list[int] = []
+    ranks: list[int] = []
+    primary_representatives: dict[tuple[str, str], int] = {}
+    multiset_representatives: dict[CanonicalDedupeGroup, int] = {}
     duplicates: list[AdditionalApplicationDuplicate] = []
     ambiguities: list[AdditionalApplicationAmbiguity] = []
     warnings: list[str] = []
     analysis_checkpoints = _CheckpointCounter(control)
+
+    def component(index: int) -> int:
+        root_index = index
+        while parents[root_index] != root_index:
+            root_index = parents[root_index]
+        while parents[index] != index:
+            next_index = parents[index]
+            parents[index] = root_index
+            index = next_index
+        return root_index
+
+    def union(first: int, second: int) -> None:
+        first_root = component(first)
+        second_root = component(second)
+        if first_root == second_root:
+            return
+        if ranks[first_root] < ranks[second_root]:
+            first_root, second_root = second_root, first_root
+        parents[second_root] = first_root
+        if ranks[first_root] == ranks[second_root]:
+            ranks[first_root] += 1
 
     if control is not None:
         control.checkpoint()
@@ -264,30 +353,55 @@ def find_additional_app_duplicates(
             warnings.append(f"AdditionalApplication skipped for dedupe because GameID or ApplicationPath is empty: {entry.title}")
             continue
 
-        signature = (
-            _canonical_additional_application(
-                entry.element,
-                root,
-                checkpoint_counter=analysis_checkpoints,
-            )
-            if entry.element is not None
-            else None
-        )
-        if signature is None:
+        if entry.element is None:
             warnings.append(f"AdditionalApplication skipped for dedupe because XML content is unavailable: {entry.title}")
             continue
 
-        kept = representatives_by_signature.get(signature)
+        group_identity = _additional_app_group_identity(
+            entry.element,
+            root,
+            analysis_checkpoints,
+        )
+        analyzed_index = len(analyzed_entries)
+        analyzed_entries.append((entry, key))
+        parents.append(analyzed_index)
+        ranks.append(0)
+        primary_representative = primary_representatives.setdefault(key, analyzed_index)
+        multiset_representative = multiset_representatives.setdefault(
+            group_identity,
+            analyzed_index,
+        )
+        union(analyzed_index, primary_representative)
+        union(analyzed_index, multiset_representative)
+
+    groups: dict[int, dict[CanonicalElement, GameEntry]] = {}
+    report_keys: dict[int, tuple[str, str]] = {}
+    protected_parent_content: dict[int, list[GameEntry]] = {}
+    for index, (entry, key) in enumerate(analyzed_entries):
+        if control is not None and (index + 1) % _SCAN_CHECKPOINT_INTERVAL == 0:
+            control.checkpoint()
+        if entry.element is None:
+            continue
+        signature = _canonical_additional_application(
+            entry.element,
+            root,
+            checkpoint_counter=analysis_checkpoints,
+        )
+        group = component(index)
+        signatures = groups.setdefault(group, {})
+        report_key = report_keys.setdefault(group, key)
+        kept = signatures.get(signature)
         if kept is None:
-            representatives_by_signature[signature] = entry
-            groups.setdefault(key, {})[signature] = entry
+            signatures[signature] = entry
             continue
 
-        kept_key = additional_app_dedupe_key(kept) or key
         # ElementTree removes an element together with its tail. Significant tail
         # text belongs to the parent mixed content and must never be discarded.
-        if entry.element is not None and bool((entry.element.tail or "").strip()):
-            protected_parent_content.setdefault(kept_key, []).append(entry)
+        if entry.element is not None and _has_significant_xml_text(
+            entry.element.tail or "",
+            analysis_checkpoints,
+        ):
+            protected_parent_content.setdefault(group, []).append(entry)
             continue
 
         duplicates.append(
@@ -295,14 +409,14 @@ def find_additional_app_duplicates(
                 platform=platform,
                 kept=kept,
                 duplicate=entry,
-                key=kept_key,
+                key=report_key,
             )
         )
 
-    for index, (key, signatures) in enumerate(groups.items(), start=1):
+    for index, (group, signatures) in enumerate(groups.items(), start=1):
         if control is not None and index % _SCAN_CHECKPOINT_INTERVAL == 0:
             control.checkpoint()
-        protected_entries = protected_parent_content.get(key, [])
+        protected_entries = protected_parent_content.get(group, [])
         if len(signatures) < 2 and not protected_entries:
             continue
         variants = [*signatures.values(), *protected_entries]
@@ -318,7 +432,7 @@ def find_additional_app_duplicates(
         ambiguities.append(
             AdditionalApplicationAmbiguity(
                 platform=platform,
-                key=key,
+                key=report_keys[group],
                 variants=tuple(variants),
                 differing_fields=tuple(sorted(differing_fields, key=str.casefold)),
             )

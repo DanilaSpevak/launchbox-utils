@@ -230,7 +230,7 @@ Platform subfolder names are sanitized of characters invalid in Windows file nam
 - `GameID` (case-insensitive);
 - file path after resolving relative to the LaunchBox root and normalizing (case-insensitive).
 
-Automatic removal is limited to entries whose complete XML content is canonically equal. Field order, formatting-only whitespace between XML elements, known boolean casing, `GameID` casing, and equivalent path spelling are normalized. Whitespace inside field and attribute values remains significant. Every other field remains significant, including `Name`, `CommandLine`, autorun flags, emulator settings, attributes, nested data, and unknown future fields.
+Automatic removal is limited to entries whose complete namespace-aware XML content is canonically equal inside one logical dedupe group. Field order, XML 1.0 formatting whitespace (`space`, `tab`, `CR`, `LF`) between immediate fields, known boolean casing, `GameID` casing, and equivalent path spelling are normalized. NBSP and other Unicode whitespace remain significant at mixed-content and parent-tail boundaries. Except for documented domain normalization, whitespace inside field and attribute values remains significant. Every other field remains significant, including `Name`, `CommandLine`, autorun flags, emulator settings, attributes, nested data, and unknown future fields.
 
 Groups with the same `GameID` and path but different canonical content are reported as ambiguous and left for manual review. If a group contains `A, A, B`, only the repeated `A` is removable; one `A` and `B` remain. Entries with an empty `GameID` or `ApplicationPath` are skipped and appear in the report warnings.
 

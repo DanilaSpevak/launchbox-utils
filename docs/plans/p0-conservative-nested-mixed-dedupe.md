@@ -195,3 +195,90 @@ root comments/PI, положительный nested-equivalence и nested cancel
 - `compileall` и `git diff --check` успешно;
 - итоговое повторное review: 0 Blocker, 0 Regression, 0 Specification gap и
   0 новых замечаний.
+
+## Повторное открытие после adversarial review исправления `4d493f7`
+
+Предыдущее заключение о нулевом списке замечаний признано недействительным.
+Adversarial-проверка самого исправления обнаружила три дефекта:
+
+1. Глобальный `representatives_by_signature` сопоставляет записи из разных
+   primary-key групп. Preserving parser хранит literal QName, но прежний
+   signature не учитывает унаследованный namespace scope, поэтому один и тот же
+   prefix с разными URI мог дать ложный duplicate и потерю данных.
+2. Проверки root/parent mixed content используют Python `str.strip()`. NBSP и
+   другие Unicode whitespace не являются formatting whitespace по XML 1.0,
+   однако ошибочно отбрасывались вместе с удаляемым элементом.
+3. Cross-key exact duplicate не добавляется в свою logical group. Поэтому
+   следующий отличный вариант в этой группе не формирует ambiguity, хотя до
+   fallback она диагностировалась.
+
+### Исправленный design и инварианты
+
+- Preserving codec сохраняет для обычного element и каждого атрибута пару
+  namespace URI/local name наряду с неизменным lexical QName. Serializer
+  продолжает писать исходные `tag`/`attrib`; metadata не попадает в XML.
+- Canonical name включает и lexical QName, и expanded namespace identity. Это
+  сохраняет прежнюю консервативность по prefix и различает одинаковый prefix в
+  разных inherited scopes.
+- Logical dedupe group является связной компонентой: записи связывает либо
+  прежний primary key, либо одинаковое мультимножество нормализованных значений
+  всех прямых `GameID` и `ApplicationPath`. Это сохраняет диагностику вариантов с
+  общим primary key и связывает переставленные repeated key fields без
+  глобального signature fallback.
+- Внутри logical group одинаковый полный signature является duplicate, а два
+  разных signatures формируют ambiguity. Удаляемый exact duplicate не может
+  исключить ambiguity между своим surviving representative и третьим вариантом.
+- Formatting whitespace проверяется только по набору XML 1.0 `" \t\r\n"`.
+  NBSP и любой другой символ сохраняет root/parent content значимым.
+- Сканирование больших text/tail выполняет cancellation checkpoint между
+  ограниченными блоками; существующая граница по XML-узлам остаётся в силе.
+
+### Baseline/candidate матрица
+
+| Сценарий | `4d493f7` | Кандидат |
+| --- | --- | --- |
+| Одинаковый prefix, разные inherited namespace URI, reordered key fields | Ложный duplicate | 0 duplicates; namespace ambiguity; обе записи сохранены |
+| NBSP в tail удаляемого `AdditionalApplication` | NBSP потерян | `#parent-content`; NBSP сохранён |
+| NBSP во внутреннем root mixed content | Ложный duplicate | Ambiguity `#content`; оба варианта сохранены |
+| Exact reordered-key variant плюс отличный вариант той же logical group | Duplicate скрывает ambiguity | Exact duplicate найден; ambiguity сохранена |
+| Только XML formatting whitespace | Canonical duplicate | Canonical duplicate |
+
+### Этапы повторного исправления
+
+1. Добавить namespace identity в preserving DOM и отдельные codec-тесты на
+   унаследованный scope без изменения lexical serialization.
+2. Перевести canonical signatures и root/attribute diagnostics на namespace-aware
+   identities.
+3. Заменить global signature fallback на connected-component grouping по
+   primary key либо полному multiset key fields.
+4. Ввести cancellable XML-whitespace predicate и применить его ко всем
+   formatting/mixed-content границам dedupe.
+5. Добавить end-to-end dry-run/apply regression-тесты для трёх дефектов и
+   граничный положительный XML-whitespace сценарий.
+6. Выполнить focused, codec, mutation, full discovery, `compileall` и
+   `git diff --check`; затем передать кандидат отдельному reviewer.
+
+Статус: реализация повторно открыта. Этот раздел не является приёмкой, а
+ROADMAP остаётся `[ ]` до независимого acceptance review.
+
+## Candidate validation 2026-07-16
+
+Реализация и авторский adversarial-проход завершены, но это не независимая
+приёмка:
+
+- focused dedupe + codec suite: 54 теста успешно;
+- полный discovery, включая реальные Windows, Tk и process-level проверки:
+  261 тест успешно в заключительном прогоне;
+- новые end-to-end тесты подтверждают: inherited namespace scopes не дают
+  ложного duplicate и диагностируются как ambiguity; NBSP сохраняется во
+  внутреннем и parent mixed content; reordered exact duplicate не скрывает
+  третий отличный вариант;
+- отдельные operational tests подтверждают cancellation внутри многомегабайтного
+  whitespace и внутри одного элемента с сотнями атрибутов;
+- adversarial review candidate diff дополнительно выявил и устранил потерю
+  namespace metadata при shallow/deep copy и удержание отдельного полного
+  canonical signature для каждого exact duplicate;
+- `compileall` и `git diff --check` успешно.
+
+Статус остаётся `[ ]`: следующий шаг — независимый reviewer, который не является
+автором этого candidate diff.

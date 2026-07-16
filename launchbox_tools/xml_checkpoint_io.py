@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import copy
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,8 @@ XML_CHECKPOINT_INTERVAL = 256
 _PROFILE_PREFIX_LIMIT = IO_CHUNK_SIZE
 _XML_NAMESPACE_URI = "http://www.w3.org/XML/1998/namespace"
 _XMLNS_NAMESPACE_URI = "http://www.w3.org/2000/xmlns/"
+
+XmlNameIdentity = tuple[str, str, str]
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,99 @@ class XmlSourceProfile:
     newline: Literal["\n", "\r\n", "\r"]
     preamble: tuple[XmlTopLevelItem, ...]
     epilogue: tuple[XmlTopLevelItem, ...]
+
+
+class PreservingElement(ET.Element):
+    """Element retaining namespace identity without changing lexical XML names."""
+
+    __slots__ = ("expanded_name", "expanded_attributes")
+
+    expanded_name: tuple[str, str]
+    expanded_attributes: tuple[tuple[str, str, str], ...]
+
+    def __init__(
+        self,
+        tag: str,
+        attrib: dict[str, str] | None = None,
+        *,
+        expanded_name: tuple[str, str],
+        expanded_attributes: tuple[tuple[str, str, str], ...] = (),
+    ) -> None:
+        super().__init__(tag, attrib or {})
+        self.expanded_name = expanded_name
+        self.expanded_attributes = expanded_attributes
+
+    def __deepcopy__(self, memo: dict[int, object]) -> PreservingElement:
+        duplicate = type(self)(
+            self.tag,
+            self.attrib.copy(),
+            expanded_name=self.expanded_name,
+            expanded_attributes=self.expanded_attributes,
+        )
+        memo[id(self)] = duplicate
+        duplicate.text = self.text
+        duplicate.tail = self.tail
+        for child in self:
+            duplicate.append(copy.deepcopy(child, memo))
+        return duplicate
+
+    def __copy__(self) -> PreservingElement:
+        duplicate = type(self)(
+            self.tag,
+            self.attrib.copy(),
+            expanded_name=self.expanded_name,
+            expanded_attributes=self.expanded_attributes,
+        )
+        duplicate.text = self.text
+        duplicate.tail = self.tail
+        duplicate.extend(self)
+        return duplicate
+
+
+def _fallback_expanded_name(name: str) -> tuple[str, str]:
+    if name.startswith("{") and "}" in name:
+        namespace, local = name[1:].rsplit("}", 1)
+        return namespace, local
+    if ":" in name:
+        # A raw prefixed name without preserving-parser metadata has unknown
+        # scope. Keeping the colon in the local component prevents it from
+        # comparing equal to a proven unqualified name.
+        return "", name
+    return "", name
+
+
+def xml_element_name_identity(element: ET.Element) -> XmlNameIdentity:
+    if element.tag is ET.Comment:
+        return "#comment", "", "#comment"
+    if element.tag is ET.ProcessingInstruction:
+        return "#processing-instruction", "", "#processing-instruction"
+    if not isinstance(element.tag, str):
+        return "", "", ""
+    expanded = getattr(element, "expanded_name", None)
+    if expanded is None:
+        expanded = _fallback_expanded_name(element.tag)
+    return element.tag, expanded[0], expanded[1]
+
+
+def xml_attribute_identities(
+    element: ET.Element,
+) -> tuple[tuple[XmlNameIdentity, str], ...]:
+    expanded_by_name = {
+        raw_name: (namespace, local)
+        for raw_name, namespace, local in getattr(element, "expanded_attributes", ())
+    }
+    identities: list[tuple[XmlNameIdentity, str]] = []
+    for raw_name, value in element.attrib.items():
+        if raw_name == "xmlns":
+            expanded = (_XMLNS_NAMESPACE_URI, "")
+        elif raw_name.startswith("xmlns:"):
+            expanded = (_XMLNS_NAMESPACE_URI, raw_name.split(":", 1)[1])
+        else:
+            expanded = expanded_by_name.get(raw_name)
+            if expanded is None:
+                expanded = _fallback_expanded_name(raw_name)
+        identities.append(((raw_name, expanded[0], expanded[1]), value))
+    return tuple(identities)
 
 
 class PreservingElementTree(ET.ElementTree):
@@ -125,13 +221,21 @@ class _PreservingTreeBuilder:
     def _top_level_items(self) -> list[XmlTopLevelItem]:
         return self.epilogue if self.root_closed else self.preamble
 
+    def _checkpoint_attributes(self, pair_index: int) -> None:
+        if (
+            self.control is not None
+            and pair_index % XML_CHECKPOINT_INTERVAL == 0
+        ):
+            self.control.checkpoint()
+
     def _namespace_scope(self, attributes: list[str]) -> dict[str, str]:
         scope = (
             self.namespace_stack[-1].copy()
             if self.namespace_stack
             else {"xml": _XML_NAMESPACE_URI}
         )
-        for index in range(0, len(attributes), 2):
+        for pair_index, index in enumerate(range(0, len(attributes), 2), start=1):
+            self._checkpoint_attributes(pair_index)
             name = attributes[index]
             value = attributes[index + 1]
             if name == "xmlns":
@@ -172,32 +276,57 @@ class _PreservingTreeBuilder:
             raise ET.ParseError(f"unbound namespace prefix in name: {name}")
         return namespace, local
 
-    def _validate_namespaces(self, name: str, attributes: list[str]) -> dict[str, str]:
+    def _validate_namespaces(
+        self,
+        name: str,
+        attributes: list[str],
+    ) -> tuple[
+        dict[str, str],
+        tuple[str, str],
+        dict[str, str],
+        tuple[tuple[str, str, str], ...],
+    ]:
         scope = self._namespace_scope(attributes)
-        self._expanded_name(name, scope, attribute=False)
-        expanded_attributes: set[tuple[str, str]] = set()
-        for index in range(0, len(attributes), 2):
+        expanded_element_name = self._expanded_name(name, scope, attribute=False)
+        ordered_attributes: dict[str, str] = {}
+        expanded_attribute_names: set[tuple[str, str]] = set()
+        expanded_attributes: list[tuple[str, str, str]] = []
+        for pair_index, index in enumerate(range(0, len(attributes), 2), start=1):
+            self._checkpoint_attributes(pair_index)
             attribute_name = attributes[index]
+            ordered_attributes[attribute_name] = attributes[index + 1]
             if attribute_name == "xmlns" or attribute_name.startswith("xmlns:"):
                 continue
             expanded = self._expanded_name(attribute_name, scope, attribute=True)
-            if expanded in expanded_attributes:
+            if expanded in expanded_attribute_names:
                 raise ET.ParseError(
                     f"duplicate namespace-expanded attribute: {attribute_name}"
                 )
-            expanded_attributes.add(expanded)
-        return scope
+            expanded_attribute_names.add(expanded)
+            expanded_attributes.append((attribute_name, *expanded))
+        return (
+            scope,
+            expanded_element_name,
+            ordered_attributes,
+            tuple(expanded_attributes),
+        )
 
     def start(self, name: str, attributes: list[str]) -> None:
         self._tick()
         if self.root_closed:
             raise ET.ParseError("multiple document elements are not allowed")
-        namespace_scope = self._validate_namespaces(name, attributes)
-        ordered_attributes = {
-            attributes[index]: attributes[index + 1]
-            for index in range(0, len(attributes), 2)
-        }
-        element = ET.Element(name, ordered_attributes)
+        (
+            namespace_scope,
+            expanded_element_name,
+            ordered_attributes,
+            expanded_attributes,
+        ) = self._validate_namespaces(name, attributes)
+        element = PreservingElement(
+            name,
+            ordered_attributes,
+            expanded_name=expanded_element_name,
+            expanded_attributes=expanded_attributes,
+        )
         if self.stack:
             self.stack[-1].append(element)
         elif self.root is None:

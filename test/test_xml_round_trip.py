@@ -1,4 +1,5 @@
 import codecs
+import copy
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -9,7 +10,13 @@ from launchbox_tools.operation_lifecycle import OperationCancelled, OperationCon
 from launchbox_tools.operations.dedupe_additional_apps import run_additional_apps_dedupe
 from launchbox_tools.operations.path_replacement import run_path_replacement
 from launchbox_tools.safe_write import XmlMutation, _serialize_xml_tree, execute_xml_transaction
-from launchbox_tools.xml_checkpoint_io import IO_CHUNK_SIZE, PreservingElementTree
+from launchbox_tools.xml_checkpoint_io import (
+    IO_CHUNK_SIZE,
+    PreservingElementTree,
+    _PreservingTreeBuilder,
+    xml_attribute_identities,
+    xml_element_name_identity,
+)
 from launchbox_tools.xml_repository import local_name, parse_xml_tree
 
 from test.support import CancelAfterCheckpoints, LaunchBoxTestCase
@@ -50,6 +57,59 @@ class XmlRoundTripTests(LaunchBoxTestCase):
                 ["xmlns:a", "xmlns:b", "data"],
             )
             self.assertEqual(payload, source)
+
+    def test_codec_retains_inherited_namespace_identity_without_changing_qname(self) -> None:
+        with self.make_root() as temp_dir:
+            xml_path = Path(temp_dir) / "inherited-scopes.xml"
+            source = (
+                b'<Root><Scope xmlns:x="urn:first"><x:Child x:flag="yes" /></Scope>'
+                b'<Scope xmlns:x="urn:second"><x:Child x:flag="yes" /></Scope></Root>'
+            )
+            xml_path.write_bytes(source)
+
+            tree = parse_xml_tree(xml_path)
+            first_child = tree.getroot()[0][0]
+            second_child = tree.getroot()[1][0]
+
+            self.assertEqual(first_child.tag, "x:Child")
+            self.assertEqual(second_child.tag, "x:Child")
+            self.assertEqual(
+                xml_element_name_identity(first_child),
+                ("x:Child", "urn:first", "Child"),
+            )
+            self.assertEqual(
+                xml_element_name_identity(second_child),
+                ("x:Child", "urn:second", "Child"),
+            )
+            self.assertNotEqual(
+                xml_attribute_identities(first_child),
+                xml_attribute_identities(second_child),
+            )
+            self.assertEqual(
+                xml_element_name_identity(copy.copy(first_child)),
+                ("x:Child", "urn:first", "Child"),
+            )
+            self.assertEqual(
+                xml_attribute_identities(copy.copy(first_child)),
+                xml_attribute_identities(first_child),
+            )
+            self.assertEqual(
+                xml_element_name_identity(copy.deepcopy(second_child)),
+                ("x:Child", "urn:second", "Child"),
+            )
+            self.assertEqual(_serialize_xml_tree(tree), source)
+
+    def test_codec_namespace_metadata_scan_is_cancellable_within_one_element(self) -> None:
+        control = CancelAfterCheckpoints(1)
+        builder = _PreservingTreeBuilder(control)
+        attributes = [
+            item
+            for index in range(600)
+            for item in (f"attribute-{index}", str(index))
+        ]
+
+        with self.assertRaises(OperationCancelled):
+            builder.start("Root", attributes)
 
     def test_codec_does_not_add_declaration_or_bom_and_keeps_lf(self) -> None:
         with self.make_root() as temp_dir:

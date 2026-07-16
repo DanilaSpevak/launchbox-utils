@@ -103,14 +103,16 @@ Relative `output_dir` values are resolved from `launchbox_root`.
 
 Path replacement edits the three path-bearing fields above: platform `Folder`, main game `ApplicationPath`, and additional application `ApplicationPath`. Absolute database values stay absolute; relative values are rewritten relative to the LaunchBox root.
 
-For Additional Apps dedupe, records are first grouped where both primary values match:
+For Additional Apps dedupe, the primary key remains:
 
 - `GameID`
 - normalized `ApplicationPath`
 
-Within each group, the complete `<AdditionalApplication>` XML content is canonicalized. Only the order and formatting-only whitespace of immediate ordinary element fields are ignored; each field occurrence remains significant. Below those fields, child order and exact `text`/`tail` are preserved, including mixed content, comments and processing instructions. Direct comments, processing instructions or significant mixed text make the root content order-sensitive. Known boolean casing, `GameID` casing, and normalized path spelling do not create distinct variants for leaf fields; this domain normalization is not applied to a field that contains children. Whitespace inside field and attribute values remains significant. All other content, including names, command lines, emulator settings, attributes, nested elements, repeated elements, and unknown future fields, remains significant. An exact full canonical signature is also matched across primary-key groups, so reordering repeated `GameID` or `ApplicationPath` fields cannot hide a proven duplicate.
+Records form logical connected components when either their primary keys match or the complete multisets of normalized values from direct `GameID` and `ApplicationPath` fields match. The second relation connects an exact record whose repeated key fields were reordered; using both relations preserves manual-review variants that share the primary key. Grouping may conservatively join namespace or structural variants for diagnostics, but automatic deletion still requires the full canonical proof below. There is no global full-signature fallback.
 
-Only repeated canonical variants are automatic duplicates. A candidate whose own `AdditionalApplication.tail` contains significant parent mixed content is never removable: it is preserved and reported as `#parent-content` ambiguity even when its element signature is otherwise identical. If a group contains multiple canonical variants, one representative of each is preserved and the group is reported as ambiguous for manual review; a root-tag or namespace difference is diagnosed as `#root`. For `A, A, B`, only the second `A` is removable.
+Within each logical component, the complete `<AdditionalApplication>` XML content is canonicalized. Only the order and XML-formatting whitespace (`#x20`, `#x9`, `#xD`, `#xA`) of immediate ordinary element fields are ignored; each field occurrence remains significant. At root formatting and parent-tail boundaries, NBSP and other Unicode whitespace remain content. Below those fields, child order and exact `text`/`tail` are preserved, including mixed content, comments and processing instructions. Direct comments, processing instructions or significant mixed text make the root content order-sensitive. Known boolean casing, `GameID` casing/surrounding whitespace, and normalized path spelling do not create distinct variants for leaf fields; this domain normalization is not applied to a field that contains children. Except for those documented domain fields, whitespace inside field and attribute values remains significant. All other content, including names, command lines, emulator settings, attributes, nested elements, repeated elements, and unknown future fields, remains significant. Canonical names contain both the lexical QName and its namespace URI/local name, including inherited namespace scope.
+
+Only repeated canonical variants inside one logical component are automatic duplicates. A candidate whose own `AdditionalApplication.tail` contains significant parent mixed content is never removable: it is preserved and reported as `#parent-content` ambiguity even when its element signature is otherwise identical. If a component contains multiple canonical variants, one representative of each is preserved and the component is reported as ambiguous for manual review; a root-tag or namespace difference is diagnosed as `#root`. For `A, A, B`, only the second `A` is removable.
 
 ## Safety Rules For XML-Modifying Operations
 
@@ -143,7 +145,9 @@ All repository reads use the same preserving XML parser. Its
 `PreservingElementTree` carries an immutable source profile for XML declaration,
 encoding, BOM, EOL style and top-level comments/processing instructions. The DOM
 keeps comments, processing instructions, unknown nodes/attributes, text/tail and
-raw qualified names plus local `xmlns` declarations, so serialization preserves
+raw qualified names plus local `xmlns` declarations. Ordinary elements also retain
+their expanded namespace URI/local-name identity, including inherited scope, as
+non-serializing metadata; shallow and deep copies retain that identity. Serialization preserves
 prefix spelling and scoped namespace bindings without the process-global
 `ElementTree` namespace registry. Domain lookups use `local_name()` and do not
 depend on a particular prefix. The transaction serializer consumes that source
