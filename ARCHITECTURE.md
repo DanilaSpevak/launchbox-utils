@@ -31,7 +31,7 @@ launchbox_tools/
   runtime_checks.py             # LaunchBox process and XML file lock checks
   mutation_lock.py              # per-installation interprocess apply lock
   operation_lifecycle.py        # operation phases and pre-commit cancellation
-  xml_checkpoint_io.py          # byte-bounded cancellable XML parsing
+  xml_checkpoint_io.py          # preserving, byte-bounded XML document parsing
   safe_write.py                 # backup and safe XML write helpers
   operations/
     audit.py                    # read-only ROM audit
@@ -56,7 +56,8 @@ launchbox_tools/
 - `runtime_checks.py` owns pre-mutation safety checks for LaunchBox process state and XML file locks.
 - `mutation_lock.py` owns the installation-wide interprocess apply lock.
 - `operation_lifecycle.py` owns thread-safe operation phases, cooperative cancellation, and the irreversible commit boundary.
-- `xml_checkpoint_io.py` owns byte-bounded readers shared by cancellable XML parsing and validation.
+- `xml_checkpoint_io.py` owns the preserving XML document model, source lexical
+  profile and byte-bounded parser shared by ordinary and cancellable reads.
 - `safe_write.py` owns backup and safe XML replacement behavior.
 - `mutation_manifest.py` writes the final apply manifest independently from user reports.
 - `config.py` owns `launchbox_utils.ini` parsing and saving.
@@ -136,7 +137,21 @@ processing another platform and returns `MutationRunResult`: `partial` when a pl
 is already committed, otherwise `failed`. The manifest, CLI, GUI, and reports receive
 that same result instead of hiding it behind a terminal path exception.
 
-Long-running operations may receive an optional `OperationControl`. It publishes `scan`, `stage`, `commit`, `rollback`, `finalize`, and `finished` phases and provides cooperative cancellation checkpoints. XML parsing and validation use byte-bounded readers, and cancellable serialization splits text, attributes, escaping, and UTF-8 encoding into chunks whose encoded output is at most 1 MiB. Recursive entry analysis and namespace/planning traversal check at least every 256 events or fragments; namespace ordering is checkpoint-aware, and pathological XML names longer than 128 KiB are rejected before serialization. Hashing, backup copies, and staged writes check at least every 1 MiB, while filesystem existence probes check between paths. Cancellation races atomically with both commit and finalization: a cancellation request either wins while work is still cancellable or is rejected after the operation enters a protected terminal phase. A cancelled staged transaction keeps verified backups, removes temporary files, leaves XML unchanged, preserves `planned` / `prepared` file states, and records `outcome: cancelled` in the apply manifest.
+Long-running operations may receive an optional `OperationControl`. It publishes `scan`, `stage`, `commit`, `rollback`, `finalize`, and `finished` phases and provides cooperative cancellation checkpoints. XML parsing and validation use byte-bounded readers, and cancellable serialization splits text, attributes, escaping, and output encoding into chunks whose encoded output is at most 1 MiB. Recursive entry analysis and namespace/planning traversal check at least every 256 events or fragments; namespace ordering is checkpoint-aware, and pathological XML names longer than 128 KiB are rejected before serialization. Hashing, backup copies, and staged writes check at least every 1 MiB, while filesystem existence probes check between paths. Cancellation races atomically with both commit and finalization: a cancellation request either wins while work is still cancellable or is rejected after the operation enters a protected terminal phase. A cancelled staged transaction keeps verified backups, removes temporary files, leaves XML unchanged, preserves `planned` / `prepared` file states, and records `outcome: cancelled` in the apply manifest.
+
+All repository reads use the same preserving XML parser. Its
+`PreservingElementTree` carries an immutable source profile for XML declaration,
+encoding, BOM, EOL style and top-level comments/processing instructions. The DOM
+keeps comments, processing instructions, unknown nodes/attributes, text/tail and
+raw qualified names plus local `xmlns` declarations, so serialization preserves
+prefix spelling and scoped namespace bindings without the process-global
+`ElementTree` namespace registry. Domain lookups use `local_name()` and do not
+depend on a particular prefix. The transaction serializer consumes that source
+profile; ordinary programmatically created `ElementTree` instances retain the
+legacy UTF-8 `ElementTree.write()` contract. DTDs are rejected during parsing
+because the codec cannot preserve their declarations safely. Attribute quote,
+entity, CDATA and empty-element spelling may be canonicalized, but their semantic
+values and order are retained.
 
 Path replacement maintains canonical file states incrementally during scan and binds each planned change to its file result, so repeated file errors remain O(1) and every change observes the current file state without a synchronization pass. A cancelled dry-run performs no terminal work proportional to the number of changes; snapshotting the much smaller file list remains O(F) in the number of affected XML files. A cancelled apply still writes one complete, atomic manifest during protected finalization. Transaction-state binding, backup mapping, and change serialization are combined into that single O(N) manifest traversal; incomplete manifests and background finalization are not used.
 

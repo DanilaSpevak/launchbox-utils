@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import io
 import os
@@ -20,28 +21,46 @@ from .paths import (
 from .runtime_checks import MutationBlockedError, ensure_safe_to_mutate
 from .xml_checkpoint_io import (
     IO_CHUNK_SIZE,
+    PreservingElementTree,
     XML_CHECKPOINT_INTERVAL,
+    XmlSourceProfile,
+    XmlTopLevelItem,
     parse_xml_tree_with_checkpoints,
 )
 
 
 _IO_CHUNK_SIZE = IO_CHUNK_SIZE
 _XML_CHECKPOINT_INTERVAL = XML_CHECKPOINT_INTERVAL
-_TEXT_CHUNK_CHARACTERS = 128 * 1024
-_MAX_XML_NAME_CHARACTERS = _TEXT_CHUNK_CHARACTERS
+_TEXT_CHUNK_CHARACTERS = 32 * 1024
+_MAX_XML_NAME_CHARACTERS = 128 * 1024
 _TRANSACTION_WORKSPACE_NAME = ".launchbox-utils-work"
 
 
-class _CheckpointingUtf8Writer:
-    def __init__(self, control: OperationControl) -> None:
+class _CheckpointingXmlWriter:
+    def __init__(
+        self,
+        control: OperationControl | None,
+        *,
+        encoding: str = "utf-8",
+        newline: str | None = None,
+        bom: bytes = b"",
+    ) -> None:
         self.buffer = io.BytesIO()
+        self.buffer.write(bom)
         self.control = control
+        self.newline = newline
+        self.encoder = codecs.getincrementalencoder(encoding)()
         self.fragments_since_checkpoint = 0
         self.bytes_since_checkpoint = 0
+        self._finished = False
+
+    def _checkpoint(self) -> None:
+        if self.control is not None:
+            self.control.checkpoint()
 
     def _write_piece(self, text: str) -> None:
-        self.control.checkpoint()
-        payload = text.encode("utf-8")
+        self._checkpoint()
+        payload = self.encoder.encode(text, final=False)
         self.buffer.write(payload)
         self.fragments_since_checkpoint += 1
         self.bytes_since_checkpoint += len(payload)
@@ -49,29 +68,39 @@ class _CheckpointingUtf8Writer:
             self.fragments_since_checkpoint >= _XML_CHECKPOINT_INTERVAL
             or self.bytes_since_checkpoint >= _IO_CHUNK_SIZE
         ):
-            self.control.checkpoint()
+            self._checkpoint()
             self.fragments_since_checkpoint = 0
             self.bytes_since_checkpoint = 0
 
-    def _write_chunks(self, text: str, escape) -> None:
+    def _write_chunks(self, text: str, escape, *, normalize_newlines: bool = False) -> None:
         if not isinstance(text, str):
             raise TypeError(f"cannot serialize {text!r} (type {type(text).__name__})")
         for offset in range(0, len(text), _TEXT_CHUNK_CHARACTERS):
             chunk = text[offset : offset + _TEXT_CHUNK_CHARACTERS]
-            self.control.checkpoint()
+            self._checkpoint()
+            if normalize_newlines and self.newline is not None:
+                chunk = chunk.replace("\r\n", "\n").replace("\r", "\n")
+                if self.newline != "\n":
+                    chunk = chunk.replace("\n", self.newline)
             self._write_piece(escape(chunk) if escape is not None else chunk)
 
     def write_raw(self, text: str) -> None:
         self._write_chunks(text, None)
 
+    def write_document_text(self, text: str) -> None:
+        self._write_chunks(text, None, normalize_newlines=True)
+
     def write_cdata(self, text: str) -> None:
-        self._write_chunks(text, _escape_cdata_chunk)
+        self._write_chunks(text, _escape_cdata_chunk, normalize_newlines=True)
 
     def write_attribute(self, text: str) -> None:
         self._write_chunks(text, _escape_attribute_chunk)
 
     def getvalue(self) -> bytes:
-        self.control.checkpoint()
+        self._checkpoint()
+        if not self._finished:
+            self.buffer.write(self.encoder.encode("", final=True))
+            self._finished = True
         return self.buffer.getvalue()
 
 
@@ -99,11 +128,13 @@ def _escape_attribute_chunk(text: str) -> str:
 
 
 class _CheckpointCounter:
-    def __init__(self, control: OperationControl) -> None:
+    def __init__(self, control: OperationControl | None) -> None:
         self.control = control
         self.count = 0
 
     def tick(self) -> None:
+        if self.control is None:
+            return
         self.count += 1
         if self.count % _XML_CHECKPOINT_INTERVAL == 0:
             self.control.checkpoint()
@@ -235,7 +266,7 @@ def _sort_namespaces_with_checkpoints(
 
 
 def _serialize_xml_element(
-    writer: _CheckpointingUtf8Writer,
+    writer: _CheckpointingXmlWriter,
     element: ET.Element,
     qnames: dict[object, str | None],
     namespaces: dict[str, str] | None,
@@ -301,11 +332,123 @@ def _serialize_xml_element(
         writer.write_cdata(element.tail)
 
 
+def _validate_raw_xml_name(name: object) -> str:
+    if not isinstance(name, str):
+        raise TypeError(f"cannot serialize {name!r} (type {type(name).__name__})")
+    if len(name) > _MAX_XML_NAME_CHARACTERS:
+        raise ValueError(
+            "XML qualified name exceeds the cancellable serialization limit "
+            f"of {_MAX_XML_NAME_CHARACTERS} characters"
+        )
+    return name
+
+
+def _serialize_raw_xml_element(
+    writer: _CheckpointingXmlWriter,
+    element: ET.Element,
+    checkpoints: _CheckpointCounter,
+) -> None:
+    checkpoints.tick()
+    tag = element.tag
+    text = element.text
+    if tag is ET.Comment:
+        writer.write_raw("<!--")
+        writer.write_document_text(str(text or ""))
+        writer.write_raw("-->")
+    elif tag is ET.ProcessingInstruction:
+        writer.write_raw("<?")
+        writer.write_document_text(str(text or ""))
+        writer.write_raw("?>")
+    else:
+        serialized_tag = _validate_raw_xml_name(tag)
+        writer.write_raw("<")
+        writer.write_raw(serialized_tag)
+        for key, value in element.attrib.items():
+            checkpoints.tick()
+            serialized_key = _validate_raw_xml_name(key)
+            writer.write_raw(" ")
+            writer.write_raw(serialized_key)
+            writer.write_raw('="')
+            writer.write_attribute(value)
+            writer.write_raw('"')
+        if text or len(element):
+            writer.write_raw(">")
+            if text:
+                writer.write_cdata(text)
+            for child in element:
+                _serialize_raw_xml_element(writer, child, checkpoints)
+            writer.write_raw("</")
+            writer.write_raw(serialized_tag)
+            writer.write_raw(">")
+        else:
+            writer.write_raw(" />")
+    if element.tail:
+        writer.write_cdata(element.tail)
+
+
+def _serialize_top_level_item(
+    writer: _CheckpointingXmlWriter,
+    item: XmlTopLevelItem,
+) -> None:
+    if item.kind == "text":
+        writer.write_document_text(item.text)
+        return
+    if item.kind == "comment":
+        writer.write_raw("<!--")
+        writer.write_document_text(item.text)
+        writer.write_raw("-->")
+        return
+    if item.kind == "pi":
+        target = _validate_raw_xml_name(item.target)
+        writer.write_raw("<?")
+        writer.write_raw(target)
+        if item.text:
+            writer.write_raw(" ")
+            writer.write_document_text(item.text)
+        writer.write_raw("?>")
+        return
+    raise ValueError(f"Unsupported top-level XML item: {item.kind}")
+
+
+def _serialize_profiled_xml_tree(
+    tree: PreservingElementTree,
+    profile: XmlSourceProfile,
+    *,
+    control: OperationControl | None,
+) -> bytes:
+    if control is not None:
+        control.checkpoint()
+    writer = _CheckpointingXmlWriter(
+        control,
+        encoding=profile.encoding,
+        newline=profile.newline,
+        bom=profile.bom,
+    )
+    if profile.declaration is not None:
+        writer.write_raw(profile.declaration)
+    for item in profile.preamble:
+        _serialize_top_level_item(writer, item)
+    _serialize_raw_xml_element(
+        writer,
+        tree.getroot(),
+        _CheckpointCounter(control),
+    )
+    for item in profile.epilogue:
+        _serialize_top_level_item(writer, item)
+    return writer.getvalue()
+
+
 def _serialize_xml_tree(
     tree: ET.ElementTree,
     *,
     control: OperationControl | None = None,
 ) -> bytes:
+    if isinstance(tree, PreservingElementTree):
+        return _serialize_profiled_xml_tree(
+            tree,
+            tree.source_profile,
+            control=control,
+        )
     if control is None:
         buffer = io.BytesIO()
         tree.write(buffer, encoding="utf-8", xml_declaration=True)
@@ -314,7 +457,7 @@ def _serialize_xml_tree(
     control.checkpoint()
     root = tree.getroot()
     qnames, namespaces = _collect_xml_namespaces(root, control)
-    writer = _CheckpointingUtf8Writer(control)
+    writer = _CheckpointingXmlWriter(control)
     writer.write_raw("<?xml version='1.0' encoding='utf-8'?>\n")
     _serialize_xml_element(
         writer,
@@ -517,7 +660,10 @@ def write_xml_tree_safely(tree: ET.ElementTree, destination: Path) -> None:
     ensure_safe_to_mutate([destination])
     temp_path = destination.with_name(f".{destination.name}.{uuid4()}.tmp")
     try:
-        tree.write(temp_path, encoding="utf-8", xml_declaration=True)
+        if isinstance(tree, PreservingElementTree):
+            _write_bytes_with_checkpoints(temp_path, _serialize_xml_tree(tree))
+        else:
+            tree.write(temp_path, encoding="utf-8", xml_declaration=True)
         _validate_xml_file(temp_path)
         os.replace(temp_path, destination)
     finally:

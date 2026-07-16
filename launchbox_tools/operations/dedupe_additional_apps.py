@@ -83,6 +83,7 @@ def _canonical_element(
     if checkpoint_counter is not None:
         checkpoint_counter.tick()
     tag = local_name(element.tag)
+    canonical_tag = element.tag if isinstance(element.tag, str) else tag
     attributes = tuple(sorted(element.attrib.items()))
     children = tuple(
         sorted(
@@ -100,7 +101,7 @@ def _canonical_element(
     tail = element.tail or ""
     if not include_tail or not tail.strip():
         tail = ""
-    return element.tag, attributes, text, tail, children
+    return canonical_tag, attributes, text, tail, children
 
 
 def additional_app_canonical_signature(entry: GameEntry, root: Path) -> CanonicalElement | None:

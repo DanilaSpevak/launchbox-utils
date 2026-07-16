@@ -12,7 +12,7 @@ from .paths import (
     platforms_metadata_path,
     resolve_launchbox_path,
 )
-from .xml_checkpoint_io import XML_CHECKPOINT_INTERVAL, parse_xml_tree_with_checkpoints
+from .xml_checkpoint_io import XML_CHECKPOINT_INTERVAL, parse_xml_tree_preserving
 
 
 @dataclass(frozen=True)
@@ -30,8 +30,15 @@ def _checkpoint_periodically(
         control.checkpoint()
 
 
-def local_name(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+def local_name(tag: object) -> str:
+    if tag is ET.Comment:
+        return "#comment"
+    if tag is ET.ProcessingInstruction:
+        return "#processing-instruction"
+    if not isinstance(tag, str):
+        return ""
+    expanded_name = tag.rsplit("}", 1)[-1] if "}" in tag else tag
+    return expanded_name.rsplit(":", 1)[-1]
 
 
 def child_text(element: ET.Element, child_name: str) -> str:
@@ -54,10 +61,7 @@ def parse_xml_tree(
     *,
     control: OperationControl | None = None,
 ) -> ET.ElementTree:
-    if control is None:
-        return ET.parse(path)
-
-    return parse_xml_tree_with_checkpoints(path, control)
+    return parse_xml_tree_preserving(path, control=control)
 
 
 def _platforms_from_root(
