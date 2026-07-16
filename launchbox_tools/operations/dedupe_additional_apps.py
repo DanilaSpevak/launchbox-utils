@@ -186,12 +186,18 @@ def _differing_fields(
     checkpoint_counter: _CheckpointCounter | None = None,
 ) -> tuple[str, ...]:
     field_maps: list[dict[str, tuple[CanonicalElement, ...]]] = []
+    root_tags: list[str] = []
     root_attributes: list[tuple[tuple[str, str], ...]] = []
     for entry in variants:
         if checkpoint_counter is not None:
             checkpoint_counter.tick()
         field_maps.append(_field_signatures(entry, root, checkpoint_counter))
         if entry.element is not None:
+            root_tags.append(
+                entry.element.tag
+                if isinstance(entry.element.tag, str)
+                else local_name(entry.element.tag)
+            )
             root_attributes.append(tuple(sorted(entry.element.attrib.items())))
 
     names: set[str] = set()
@@ -209,6 +215,8 @@ def _differing_fields(
             signatures.add(fields.get(name))
         if len(signatures) > 1:
             differing.append(name)
+    if len(set(root_tags)) > 1:
+        differing.append("#root")
     if len(set(root_attributes)) > 1:
         differing.append("@attributes")
     return tuple(sorted(differing, key=str.casefold))
@@ -234,6 +242,10 @@ def find_additional_app_duplicates(
     control: OperationControl | None = None,
 ) -> tuple[list[AdditionalApplicationDuplicate], list[AdditionalApplicationAmbiguity], list[str]]:
     groups: dict[tuple[str, str], dict[CanonicalElement, GameEntry]] = {}
+    # The primary key organizes conservative variants, but an exact full signature
+    # remains safe to match when repeated key fields appear in a different order.
+    representatives_by_signature: dict[CanonicalElement, GameEntry] = {}
+    protected_parent_content: dict[tuple[str, str], list[GameEntry]] = {}
     duplicates: list[AdditionalApplicationDuplicate] = []
     ambiguities: list[AdditionalApplicationAmbiguity] = []
     warnings: list[str] = []
@@ -265,10 +277,17 @@ def find_additional_app_duplicates(
             warnings.append(f"AdditionalApplication skipped for dedupe because XML content is unavailable: {entry.title}")
             continue
 
-        variants = groups.setdefault(key, {})
-        kept = variants.get(signature)
+        kept = representatives_by_signature.get(signature)
         if kept is None:
-            variants[signature] = entry
+            representatives_by_signature[signature] = entry
+            groups.setdefault(key, {})[signature] = entry
+            continue
+
+        kept_key = additional_app_dedupe_key(kept) or key
+        # ElementTree removes an element together with its tail. Significant tail
+        # text belongs to the parent mixed content and must never be discarded.
+        if entry.element is not None and bool((entry.element.tail or "").strip()):
+            protected_parent_content.setdefault(kept_key, []).append(entry)
             continue
 
         duplicates.append(
@@ -276,26 +295,32 @@ def find_additional_app_duplicates(
                 platform=platform,
                 kept=kept,
                 duplicate=entry,
-                key=key,
+                key=kept_key,
             )
         )
 
     for index, (key, signatures) in enumerate(groups.items(), start=1):
         if control is not None and index % _SCAN_CHECKPOINT_INTERVAL == 0:
             control.checkpoint()
-        if len(signatures) < 2:
+        protected_entries = protected_parent_content.get(key, [])
+        if len(signatures) < 2 and not protected_entries:
             continue
-        variants = list(signatures.values())
+        variants = [*signatures.values(), *protected_entries]
+        differing_fields = set(
+            _differing_fields(
+                variants,
+                root,
+                analysis_checkpoints,
+            )
+        )
+        if protected_entries:
+            differing_fields.add("#parent-content")
         ambiguities.append(
             AdditionalApplicationAmbiguity(
                 platform=platform,
                 key=key,
                 variants=tuple(variants),
-                differing_fields=_differing_fields(
-                    variants,
-                    root,
-                    analysis_checkpoints,
-                ),
+                differing_fields=tuple(sorted(differing_fields, key=str.casefold)),
             )
         )
 

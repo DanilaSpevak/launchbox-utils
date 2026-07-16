@@ -904,6 +904,83 @@ class DedupeAdditionalAppsTests(LaunchBoxTestCase):
             self.assertEqual(manifest["changes"][0]["state"], "prepared")
             self.assertEqual(manifest["changes"][0]["error"], "precommit check failed")
 
+    def test_dedupe_apply_preserves_significant_parent_tail_as_ambiguity(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                """  <AdditionalApplication><GameID>tail</GameID><Name>Tail</Name><ApplicationPath>Games/NES/tail.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication><GameID>tail</GameID><Name>Tail</Name><ApplicationPath>Games/NES/tail.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication><GameID>tail</GameID><Name>Tail</Name><ApplicationPath>Games/NES/tail.zip</ApplicationPath></AdditionalApplication>IMPORTANT""",
+            )
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                run_result = run_additional_apps_dedupe(root, apply_changes=True)
+
+            result = run_result.results[0]
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            xml_text = xml_path.read_text(encoding="utf-8")
+            remaining = [
+                element
+                for element in parse_xml(xml_path)
+                if local_name(element.tag) == "AdditionalApplication"
+            ]
+
+            self.assertEqual(run_result.outcome, MutationOutcome.SUCCESS)
+            self.assertEqual(result.state, MutationState.COMMITTED)
+            self.assertEqual(len(result.duplicates), 1)
+            self.assertEqual(len(result.ambiguities), 1)
+            self.assertEqual(result.ambiguities[0].differing_fields, ("#parent-content",))
+            self.assertEqual(len(result.ambiguities[0].variants), 2)
+            self.assertEqual(len(remaining), 2)
+            self.assertIn("IMPORTANT", xml_text)
+
+    def test_dedupe_apply_matches_reordered_repeated_key_fields(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                """  <AdditionalApplication><GameID>primary</GameID><GameID>alias</GameID><Name>Repeated keys</Name><ApplicationPath>Games/NES/primary.zip</ApplicationPath><ApplicationPath>Games/NES/alternate.zip</ApplicationPath></AdditionalApplication>
+  <AdditionalApplication><ApplicationPath>Games\\NES\\alternate.zip</ApplicationPath><Name>Repeated keys</Name><GameID>ALIAS</GameID><ApplicationPath>Games\\NES\\primary.zip</ApplicationPath><GameID>PRIMARY</GameID></AdditionalApplication>""",
+            )
+
+            with patch("launchbox_tools.runtime_checks.is_launchbox_process_running", return_value=False):
+                run_result = run_additional_apps_dedupe(root, apply_changes=True)
+
+            result = run_result.results[0]
+            xml_path = root / "Data" / "Platforms" / "Nintendo Entertainment System.xml"
+            remaining = [
+                element
+                for element in parse_xml(xml_path)
+                if local_name(element.tag) == "AdditionalApplication"
+            ]
+
+            self.assertEqual(run_result.outcome, MutationOutcome.SUCCESS)
+            self.assertEqual(result.state, MutationState.COMMITTED)
+            self.assertEqual(len(result.duplicates), 1)
+            self.assertEqual(result.ambiguities, [])
+            self.assertEqual(len(remaining), 1)
+
+    def test_dedupe_reports_root_namespace_difference(self) -> None:
+        with self.make_root() as temp_dir:
+            root = Path(temp_dir)
+            self.write_platforms_xml(root, "Games/NES")
+            self.write_games_xml_raw(
+                root,
+                """  <first:AdditionalApplication xmlns:first="urn:first" xmlns:second="urn:second"><GameID>namespace</GameID><Name>Namespace</Name><ApplicationPath>Games/NES/namespace.zip</ApplicationPath></first:AdditionalApplication>
+  <second:AdditionalApplication xmlns:first="urn:first" xmlns:second="urn:second"><GameID>namespace</GameID><Name>Namespace</Name><ApplicationPath>Games/NES/namespace.zip</ApplicationPath></second:AdditionalApplication>""",
+            )
+
+            run_result = run_additional_apps_dedupe(root, apply_changes=False)
+
+            result = run_result.results[0]
+            self.assertEqual(run_result.outcome, MutationOutcome.DRY_RUN)
+            self.assertEqual(result.duplicates, [])
+            self.assertEqual(len(result.ambiguities), 1)
+            self.assertEqual(result.ambiguities[0].differing_fields, ("#root",))
+
     def test_conservative_dedupe_fixture_dry_run_reports_duplicates_and_ambiguities(self) -> None:
         with self.make_root() as temp_dir:
             root = Path(temp_dir)

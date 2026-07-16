@@ -103,14 +103,14 @@ Relative `output_dir` values are resolved from `launchbox_root`.
 
 Path replacement edits the three path-bearing fields above: platform `Folder`, main game `ApplicationPath`, and additional application `ApplicationPath`. Absolute database values stay absolute; relative values are rewritten relative to the LaunchBox root.
 
-For Additional Apps dedupe, records are first grouped where both values match:
+For Additional Apps dedupe, records are first grouped where both primary values match:
 
 - `GameID`
 - normalized `ApplicationPath`
 
-Within each group, the complete `<AdditionalApplication>` XML content is canonicalized. Only the order and formatting-only whitespace of immediate ordinary element fields are ignored; each field occurrence remains significant. Below those fields, child order and exact `text`/`tail` are preserved, including mixed content, comments and processing instructions. Direct comments, processing instructions or significant mixed text make the root content order-sensitive. Known boolean casing, `GameID` casing, and normalized path spelling do not create distinct variants for leaf fields; this domain normalization is not applied to a field that contains children. Whitespace inside field and attribute values remains significant. All other content, including names, command lines, emulator settings, attributes, nested elements, repeated elements, and unknown future fields, remains significant.
+Within each group, the complete `<AdditionalApplication>` XML content is canonicalized. Only the order and formatting-only whitespace of immediate ordinary element fields are ignored; each field occurrence remains significant. Below those fields, child order and exact `text`/`tail` are preserved, including mixed content, comments and processing instructions. Direct comments, processing instructions or significant mixed text make the root content order-sensitive. Known boolean casing, `GameID` casing, and normalized path spelling do not create distinct variants for leaf fields; this domain normalization is not applied to a field that contains children. Whitespace inside field and attribute values remains significant. All other content, including names, command lines, emulator settings, attributes, nested elements, repeated elements, and unknown future fields, remains significant. An exact full canonical signature is also matched across primary-key groups, so reordering repeated `GameID` or `ApplicationPath` fields cannot hide a proven duplicate.
 
-Only repeated canonical variants are automatic duplicates. If a group contains multiple canonical variants, one representative of each is preserved and the group is reported as ambiguous for manual review. For `A, A, B`, only the second `A` is removable.
+Only repeated canonical variants are automatic duplicates. A candidate whose own `AdditionalApplication.tail` contains significant parent mixed content is never removable: it is preserved and reported as `#parent-content` ambiguity even when its element signature is otherwise identical. If a group contains multiple canonical variants, one representative of each is preserved and the group is reported as ambiguous for manual review; a root-tag or namespace difference is diagnosed as `#root`. For `A, A, B`, only the second `A` is removable.
 
 ## Safety Rules For XML-Modifying Operations
 
