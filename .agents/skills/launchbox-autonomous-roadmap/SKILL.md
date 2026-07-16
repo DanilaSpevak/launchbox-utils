@@ -157,6 +157,11 @@ canonical `main`. Never perform the merge yourself.
 - To repeat a suspended audit after its accepted remediation is integrated, use
   the workflow's audit-refresh protocol. Never route an audit through
   `implementing` or reuse the implementation drift reset.
+- If canonical baseline drifts after an audit reaches `accepted` or
+  `awaiting_merge`, use the audit-refresh family with a new
+  `docs/plans/<work_item_id>-audit-refresh-<N>.md`, clear prior candidate and
+  verdict state, enter `preparing`, assign a new auditor, and repeat
+  `auditing → recording → reviewing`. Never use implementation refresh.
 - Choose refresh `N` deterministically as one plus the greatest numeric suffix
   already present for that exact refresh family across remote branches and PRs.
   The empty-family maximum is `0`; suffixes are decimal `[1-9][0-9]*` without

@@ -33,7 +33,10 @@ verdict_sha256: null
 
 ## Contract and scope
 
-- Execution plan: `docs/plans/<work_item_id>.md`
+- Execution plan: `<exact variant path>`
+  - initial: `docs/plans/<work_item_id>.md`
+  - implementation refresh: `docs/plans/<work_item_id>-refresh-<N>.md`
+  - audit refresh/repeat: `docs/plans/<work_item_id>-audit-refresh-<N>.md`
 - In scope:
 - Out of scope:
 - Blocking invariants:
